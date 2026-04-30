@@ -105,13 +105,10 @@ export function useStudySession(
       }
       wordsMapRef.current = wMap;
 
-      // 尝试恢复 session
+      // 尝试恢复 session（跨天不丢弃，始终从中断处恢复）
       const session = await db.getSession();
-      const today = getTodayString();
 
-      if (session && session.date === today) {
-        // 恢复中断的会话
-        console.log('Restoring session from', session.phase, 'index', session.currentIndex);
+      if (session) {
         const newWordIds = [...session.newWords, ...(session.extraNewWords || [])];
         setInternal({
           phase: session.phase,
@@ -126,7 +123,7 @@ export function useStudySession(
         return;
       }
 
-      // 生成新队列
+      // 无 session → 生成新队列
       const allProgress = await db.getAllProgress();
       const pMap = new Map<string, ProgressRecord>();
       for (const p of allProgress) {

@@ -3,13 +3,14 @@
 // ============================================================
 
 import { useState, useEffect, useCallback } from 'react';
-import type { BookId } from '../types';
+import type { BookId, DailyLogRecord } from '../types';
 import * as db from '../lib/db';
 
 interface StatsPanelProps {
   open: boolean;
   onClose: () => void;
   onOpenSettings: () => void;
+  onOpenWordList: () => void;
   onSwitchBook: (bookId: BookId) => void;
 }
 
@@ -20,7 +21,7 @@ const BOOK_LABELS: Record<BookId, string> = {
   toefl: '托福词汇',
 };
 
-export default function StatsPanel({ open, onClose, onOpenSettings, onSwitchBook }: StatsPanelProps) {
+export default function StatsPanel({ open, onClose, onOpenSettings, onOpenWordList, onSwitchBook }: StatsPanelProps) {
   const [stats, setStats] = useState({
     streak: 0,
     learned: 0,
@@ -29,6 +30,7 @@ export default function StatsPanel({ open, onClose, onOpenSettings, onSwitchBook
     total: 0,
     currentBook: 'cet6' as BookId,
   });
+  const [dailyLogs, setDailyLogs] = useState<DailyLogRecord[]>([]);
 
   useEffect(() => {
     if (!open) return;
@@ -52,6 +54,11 @@ export default function StatsPanel({ open, onClose, onOpenSettings, onSwitchBook
         total,
         currentBook: bookId,
       });
+
+      // 加载学习历史
+      const logs = await db.getAllDailyLogs();
+      logs.sort((a, b) => b.date.localeCompare(a.date)); // 最新在前
+      setDailyLogs(logs.slice(0, 14)); // 最近 14 天
     }
     load();
   }, [open]);
@@ -125,6 +132,9 @@ export default function StatsPanel({ open, onClose, onOpenSettings, onSwitchBook
             <span className="stats-panel__menu-value">{BOOK_LABELS[stats.currentBook]}</span>
           </div>
 
+          <button className="stats-panel__menu-item" onClick={onOpenWordList}>
+            查看词库 ▸
+          </button>
           <button className="stats-panel__menu-item" onClick={onOpenSettings}>
             设置 ▸
           </button>
@@ -135,6 +145,25 @@ export default function StatsPanel({ open, onClose, onOpenSettings, onSwitchBook
             导入数据 ▸
           </button>
         </div>
+
+        {dailyLogs.length > 0 && (
+          <div className="stats-panel__history">
+            <h3 className="stats-panel__history-title">学习记录</h3>
+            <div className="stats-panel__history-list">
+              {dailyLogs.map(log => (
+                <div key={log.date} className="stats-panel__history-item">
+                  <span className="stats-panel__history-date">{log.date.slice(5)}</span>
+                  <span className="stats-panel__history-bar" style={{
+                    flex: (log.newWordsCount + log.reviewWordsCount) / 2
+                  }} />
+                  <span className="stats-panel__history-count">
+                    新学{log.newWordsCount} 复习{log.reviewWordsCount}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <button className="stats-panel__close" onClick={onClose}>
           关闭

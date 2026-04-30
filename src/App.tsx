@@ -21,13 +21,15 @@ import StatsPanel from './components/StatsPanel';
 import Settings from './components/Settings';
 import ProgressDots from './components/ProgressDots';
 import AiExplain from './components/AiExplain';
+import WordList from './components/WordList';
 
 type ViewState =
   | 'loading'
   | 'welcome'
   | 'study'
   | 'summary'
-  | 'settings';
+  | 'settings'
+  | 'wordlist';
 
 const DEFAULT_BOOK_ID: BookId = 'cet6';
 
@@ -114,12 +116,14 @@ export default function App() {
     setView('study');
   }, []);
 
+  // 学习中返回词库选择
+  const handleBackToSelectBook = useCallback(() => {
+    setView('welcome');
+  }, []);
+
   // 学习流程中 advance 回调
   const handleAdvance = useCallback(async (result?: boolean) => {
     await actions.advance(result);
-
-    // 检查是否需要显示「继续学习」选项
-    // ROUND_1 且有额外学习空间
   }, [actions]);
 
   // ROUND_1 「继续学习」
@@ -127,15 +131,6 @@ export default function App() {
     await actions.loadMoreNewWords(10);
     setShowContinueOption(false);
   }, [actions]);
-
-  // ROUND_1 「进入下一轮」
-  const handleEnterNextRound = useCallback(async () => {
-    // 关闭继续学习选项，advance 到 ROUND_2
-    setShowContinueOption(false);
-    // ROUND_1 结束后 advance 会进入 ROUND_2
-    // 但我们需要快速遍历完当前 ROUND_1
-    // 实际上 advance 在 ROUND_1 每词后才前进
-  }, []);
 
   // 切换词库
   const handleSwitchBook = useCallback(async (newBookId: BookId) => {
@@ -157,6 +152,16 @@ export default function App() {
   const handleCloseSettings = useCallback(() => {
     setView(settings ? 'study' : 'welcome');
   }, [settings]);
+
+  // 词表
+  const handleOpenWordList = useCallback(() => {
+    setView('wordlist');
+    setStatsOpen(false);
+  }, []);
+
+  const handleCloseWordList = useCallback(() => {
+    setView('study');
+  }, []);
 
   // 触控手势
   useEffect(() => {
@@ -184,10 +189,8 @@ export default function App() {
       if (absDx > 50 && absDx > absDy) {
         if (state.phase === 'review' || state.phase === 'round2' || state.phase === 'round4') {
           if (dx > 0) {
-            // 右滑 = 记得
             actions.advance(true);
           } else {
-            // 左滑 = 忘了/不记得/模糊
             actions.advance(false);
           }
         }
@@ -237,6 +240,17 @@ export default function App() {
     );
   }
 
+  if (view === 'wordlist') {
+    return (
+      <div className="app">
+        <WordList
+          bookId={settings?.currentBookId ?? DEFAULT_BOOK_ID}
+          onBack={handleCloseWordList}
+        />
+      </div>
+    );
+  }
+
   // 学习流程
   if (view === 'study' && state.ready) {
     // SUMMARY 阶段独立渲染
@@ -259,6 +273,7 @@ export default function App() {
             open={statsOpen}
             onClose={() => setStatsOpen(false)}
             onOpenSettings={handleOpenSettings}
+            onOpenWordList={handleOpenWordList}
             onSwitchBook={handleSwitchBook}
           />
         </div>
@@ -344,6 +359,13 @@ export default function App() {
 
     return (
       <div className="app">
+        {/* 返回按钮 */}
+        <div className="study-header">
+          <button className="back-btn" onClick={handleBackToSelectBook}>
+            ← 词库
+          </button>
+        </div>
+
         {renderCard()}
 
         {showAiExplain && state.currentEntry && (
@@ -369,6 +391,7 @@ export default function App() {
           open={statsOpen}
           onClose={() => setStatsOpen(false)}
           onOpenSettings={handleOpenSettings}
+          onOpenWordList={handleOpenWordList}
           onSwitchBook={handleSwitchBook}
         />
       </div>

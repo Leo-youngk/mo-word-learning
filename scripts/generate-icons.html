@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Icon Generator</title>
+<style>
+  body { font-family: sans-serif; padding: 40px; text-align: center; }
+  canvas { border: 1px solid #ccc; margin: 10px; }
+  button { padding: 10px 20px; margin: 10px; font-size: 16px; cursor: pointer; }
+</style>
+</head>
+<body>
+<h2>「默」图标生成器</h2>
+<p>点击下方按钮生成图标，然后右键保存到 public/ 目录</p>
+<button onclick="generate(192)">生成 icon-192.png</button>
+<button onclick="generate(512)">生成 icon-512.png</button>
+<br>
+<canvas id="c" width="512" height="512"></canvas>
+<script>
+function generate(size) {
+  const canvas = document.getElementById('c');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  // 白色背景
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, size, size);
+  // 黑色「默」字
+  ctx.fillStyle = '#000000';
+  const fontSize = Math.round(size * 0.4);
+  ctx.font = `${fontSize}px "Noto Serif SC", "SimSun", "STSong", serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('默', size / 2, size / 2);
+  // 下载
+  const link = document.createElement('a');
+  link.download = `icon-${size}.png`;
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+}
+</script>
+</body>
+</html>

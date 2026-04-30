@@ -1,0 +1,11 @@
+node_modules
+dist
+.env
+.env.local
+.DS_Store
+temp_vocab
+english-vocabulary
+vocab.zip
+*.log
+.qwen
+.vscode

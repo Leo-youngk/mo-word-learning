@@ -1,8 +1,6 @@
 // ============================================================
 // 学习状态机 Hook —「默」Mo
-//
-// 流程：REVIEW → ROUND_1 → ROUND_2 → ROUND_3 → ROUND_4 → SUMMARY
-// 如果没有复习词，跳过 REVIEW 直接进入 ROUND_1
+// 只保留两条主流程：复习 fuzzy 词、新词手动标记为模糊/已掌握
 // ============================================================
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -10,467 +8,453 @@ import type {
   BookId,
   WordEntry,
   ProgressRecord,
-  StudyPhase,
   SessionRecord,
+  StudyPhase,
 } from '../types';
 import * as db from '../lib/db';
 import {
   getTodayString,
   generateDailyQueue,
-  handleReviewResult,
-  createProgressRecord,
-  addDays,
+  createFuzzyProgress,
+  createMasteredProgress,
 } from '../lib/scheduler';
+import { validateStudySession } from '../lib/session';
 
-// ---- 导出的接口 ----
-
-export interface StudyState {
-  /** 当前阶段 */
-  phase: StudyPhase;
-  /** 当前词条（可用于渲染） */
-  currentEntry: WordEntry | null;
-  /** 当前词的进度记录（review 阶段用） */
-  currentProgress: ProgressRecord | null;
-  /** 当前阶段内的索引 */
-  currentIndex: number;
-  /** 当前阶段总词数 */
-  totalInPhase: number;
-  /** 全局词库索引(currentWordIndex) */
-  globalWordIndex: number;
-  /** 今日新词数 */
-  newWordsCount: number;
-  /** 今日复习词数 */
-  reviewWordsCount: number;
-  /** 是否加载完成 */
+interface StudyState {
   ready: boolean;
-}
-
-export interface StudyActions {
-  /** 进入下一项或下一轮 */
-  advance: (result?: boolean) => Promise<void>;
-  /** ROUND_1 中「继续学习」加载更多新词 */
-  loadMoreNewWords: (count: number) => Promise<void>;
-  /** 跳过当前项（仅 review/round3 使用） */
-  skip: () => void;
-}
-
-// ---- 内部状态 ----
-
-interface InternalState {
+  advancing: boolean;
   phase: StudyPhase;
   currentIndex: number;
-  newWords: string[];       // wordId[]
-  reviewWords: string[];    // wordId[]
-  round2Results: Record<string, boolean>;
-  round4Results: Record<string, boolean>;
-  reviewResults: Record<string, boolean>;
-  extraNewWords: string[];  // ROUND_1 中「继续学习」加载的额外新词
+  totalInPhase: number;
+  currentEntry: WordEntry | null;
+  currentProgress: ProgressRecord | null;
+  newWordsCount: number;
+  reviewWordsCount: number;
+  processedNewWordsCount: number;
+  sessionError: string;
+}
+
+interface StudyActions {
+  markFuzzy: () => Promise<void>;
+  markMastered: () => Promise<void>;
+  finishTodayEarly: () => Promise<void>;
+  restartSession: () => Promise<void>;
+}
+
+function getPhaseWordIds(session: SessionRecord): string[] {
+  if (session.phase === 'review') return session.reviewWords;
+  if (session.phase === 'round1') return session.newWords;
+  return [];
+}
+
+function getTotalInPhase(phase: StudyPhase, session: SessionRecord): number {
+  if (phase === 'review') return session.reviewWords.length;
+  if (phase === 'round1') return session.newWords.length;
+  return 0;
+}
+
+function findEntry(bookWords: WordEntry[], wordId?: string): WordEntry | null {
+  if (!wordId) return null;
+  return bookWords.find(w => w.id === wordId) || null;
 }
 
 export function useStudySession(
   bookId: BookId,
-  words: WordEntry[],
+  bookWords: WordEntry[],
   currentWordIndex: number,
   dailyMinNewWords: number,
-  ready: boolean
+  enabled: boolean,
 ): { state: StudyState; actions: StudyActions } {
-  const [internal, setInternal] = useState<InternalState>({
-    phase: 'round1',
+  const [state, setState] = useState<StudyState>({
+    ready: false,
+    advancing: false,
+    phase: 'review',
     currentIndex: 0,
-    newWords: [],
-    reviewWords: [],
-    round2Results: {},
-    round4Results: {},
-    reviewResults: {},
-    extraNewWords: [],
+    totalInPhase: 0,
+    currentEntry: null,
+    currentProgress: null,
+    newWordsCount: 0,
+    reviewWordsCount: 0,
+    processedNewWordsCount: 0,
+    sessionError: '',
   });
 
-  // 缓存当前词库的词条 map（wordId → WordEntry）
-  const wordsMapRef = useRef<Map<string, WordEntry>>(new Map());
-  const progressMapRef = useRef<Map<string, ProgressRecord>>(new Map());
-  const initializedRef = useRef(false);
-  const globalIndexRef = useRef(currentWordIndex);
+  const stateRef = useRef(state);
+  const markingRef = useRef(false);
+  stateRef.current = state;
 
-  // 从 session 恢复或生成新队列
   useEffect(() => {
-    if (!ready || words.length === 0) return;
-    if (initializedRef.current) return;
-    initializedRef.current = true;
+    if (!enabled) {
+      setState(prev => ({ ...prev, ready: false }));
+      return;
+    }
+
+    let cancelled = false;
 
     async function init() {
-      // 构建词条 map
-      const wMap = new Map<string, WordEntry>();
-      for (const w of words) {
-        wMap.set(w.id, w);
-      }
-      wordsMapRef.current = wMap;
+      const today = getTodayString();
+      const saved = await db.getSession();
 
-      // 尝试恢复 session（跨天不丢弃，始终从中断处恢复）
-      const session = await db.getSession();
-
-      if (session) {
-        const newWordIds = [...session.newWords, ...(session.extraNewWords || [])];
-        setInternal({
-          phase: session.phase,
-          currentIndex: session.currentIndex,
-          newWords: session.newWords,
-          reviewWords: session.reviewWords,
-          round2Results: session.round2Results,
-          round4Results: session.round4Results,
-          reviewResults: session.reviewResults,
-          extraNewWords: session.extraNewWords || [],
-        });
+      if (saved && saved.date === today && (!saved.bookId || saved.bookId === bookId)) {
+        const validation = validateStudySession(saved, bookId, bookWords);
+        if (!validation.valid) {
+          await db.clearSession();
+          await startNewSession(cancelled);
+          return;
+        }
+        await restoreSession(saved, cancelled);
         return;
       }
 
-      // 无 session → 生成新队列
-      const allProgress = await db.getAllProgress();
-      const pMap = new Map<string, ProgressRecord>();
-      for (const p of allProgress) {
-        pMap.set(p.wordId, p);
+      if (saved && saved.date !== today) {
+        await db.clearSession();
       }
-      progressMapRef.current = pMap;
 
-      const { reviewQueue, newWords: newWordEntries } = generateDailyQueue(
-        allProgress,
-        words,
-        currentWordIndex,
-        dailyMinNewWords
-      );
-
-      const reviewWordIds = reviewQueue.map(p => p.wordId);
-      const newWordIds = newWordEntries.map(w => w.id);
-
-      const phase: StudyPhase = reviewWordIds.length > 0 ? 'review' : 'round1';
-
-      const newState: InternalState = {
-        phase,
-        currentIndex: 0,
-        newWords: newWordIds,
-        reviewWords: reviewWordIds,
-        round2Results: {},
-        round4Results: {},
-        reviewResults: {},
-        extraNewWords: [],
-      };
-
-      setInternal(newState);
-
-      // 持久化 session
-      await persistSession(newState);
+      await startNewSession(cancelled);
     }
 
     init();
-  }, [ready, words, currentWordIndex, dailyMinNewWords]);
 
-  // 每次 internal 变化时持久化 session
-  const persistSession = useCallback(async (s: InternalState) => {
-    const record: SessionRecord = {
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, bookId, bookWords, currentWordIndex, dailyMinNewWords]);
+
+  async function setSessionState(session: SessionRecord, cancelled = false) {
+    if (cancelled) return;
+
+    const ids = getPhaseWordIds(session);
+    const currentWordId = ids[session.currentIndex];
+    const currentEntry = findEntry(bookWords, currentWordId);
+    setState({
+      ready: true,
+      advancing: false,
+      phase: session.phase,
+      currentIndex: session.currentIndex,
+      totalInPhase: getTotalInPhase(session.phase, session),
+      currentEntry,
+      currentProgress: null,
+      newWordsCount: session.newWords.length,
+      reviewWordsCount: session.reviewWords.length,
+      processedNewWordsCount: session.processedNewWordIds?.length || 0,
+      sessionError: '',
+    });
+  }
+
+  async function restoreSession(saved: SessionRecord, cancelled = false) {
+    await setSessionState(saved, cancelled);
+  }
+
+  async function startNewSession(cancelled = false) {
+    const queue = await generateDailyQueue(bookId, bookWords, currentWordIndex, dailyMinNewWords);
+    const phase: StudyPhase = queue.reviewWords.length > 0
+      ? 'review'
+      : queue.newWords.length > 0
+        ? 'round1'
+        : 'summary';
+
+    const session: SessionRecord = {
       key: 'current',
       date: getTodayString(),
-      phase: s.phase,
-      currentIndex: s.currentIndex,
-      newWords: s.newWords,
-      reviewWords: s.reviewWords,
-      round2Results: s.round2Results,
-      round4Results: s.round4Results,
-      reviewResults: s.reviewResults,
+      bookId,
+      phase,
+      currentIndex: 0,
+      reviewWords: queue.reviewWords.map(p => p.wordId),
+      newWords: queue.newWords.map(w => w.id),
+      extraNewWords: [],
+      round2Results: {},
+      round4Results: {},
+      reviewResults: {},
+      plannedNextWordIndex: queue.plannedNextWordIndex,
+      consumedNewWordIds: [],
+      processedNewWordIds: [],
     };
-    await db.saveSession(record);
-  }, []);
 
-  // 持久化包装
-  const saveAndPersist = useCallback(async (s: InternalState) => {
-    setInternal(s);
-    await persistSession(s);
-  }, [persistSession]);
+    await db.saveSession(session);
 
-  // 获取当前词条
-  const getCurrentWordId = useCallback((s: InternalState): string | null => {
-    const allNew = [...s.newWords, ...s.extraNewWords];
-    switch (s.phase) {
-      case 'review':
-        return s.reviewWords[s.currentIndex] ?? null;
-      case 'round1':
-        return allNew[s.currentIndex] ?? null;
-      case 'round2':
-        return allNew[s.currentIndex] ?? null;
-      case 'round3': {
-        const difficultIds = allNew.filter(id => s.round2Results[id] === false);
-        return difficultIds[s.currentIndex] ?? null;
+    if (phase === 'summary') {
+      await finalizeDay(session);
+      if (!cancelled) {
+        setState({
+          ready: true,
+          advancing: false,
+          phase: 'summary',
+          currentIndex: 0,
+          totalInPhase: 0,
+          currentEntry: null,
+          currentProgress: null,
+          newWordsCount: 0,
+          reviewWordsCount: queue.reviewWords.length,
+          processedNewWordsCount: 0,
+          sessionError: '',
+        });
       }
-      case 'round4':
-        return allNew[s.currentIndex] ?? null;
-      case 'summary':
-        return null;
+      return;
     }
-  }, []);
 
-  // ---- ADVANCE ----
-  const advance = useCallback(async (result?: boolean) => {
-    setInternal(prev => {
-      const next = { ...prev };
-      const allNew = [...prev.newWords, ...prev.extraNewWords];
+    await setSessionState(session, cancelled);
+  }
 
-      switch (prev.phase) {
-        case 'review': {
-          // 记录结果
-          if (result !== undefined) {
-            next.reviewResults = {
-              ...prev.reviewResults,
-              [prev.reviewWords[prev.currentIndex]]: result,
-            };
-            // 更新进度到 DB（异步，不阻塞）
-            const wordId = prev.reviewWords[prev.currentIndex];
-            updateReviewProgress(wordId, result);
-          }
-          // 前进
-          if (prev.currentIndex + 1 < prev.reviewWords.length) {
-            next.currentIndex = prev.currentIndex + 1;
-          } else {
-            // 复习完毕，进入 ROUND_1
-            next.phase = allNew.length > 0 ? 'round1' : 'summary';
-            next.currentIndex = 0;
-          }
-          break;
-        }
+  async function advanceSession(session: SessionRecord) {
+    const nextIndex = session.currentIndex + 1;
 
-        case 'round1': {
-          if (prev.currentIndex + 1 < allNew.length) {
-            next.currentIndex = prev.currentIndex + 1;
-          } else {
-            // ROUND_1 结束，进入 ROUND_2
-            next.phase = 'round2';
-            next.currentIndex = 0;
-          }
-          break;
-        }
-
-        case 'round2': {
-          // 记录结果
-          if (result !== undefined) {
-            next.round2Results = {
-              ...prev.round2Results,
-              [allNew[prev.currentIndex]]: result,
-            };
-          }
-          if (prev.currentIndex + 1 < allNew.length) {
-            next.currentIndex = prev.currentIndex + 1;
-          } else {
-            // ROUND_2 结束
-            const difficultIds = allNew.filter(id => next.round2Results[id] === false);
-            if (difficultIds.length > 0) {
-              next.phase = 'round3';
-              next.currentIndex = 0;
-            } else {
-              next.phase = 'round4';
-              next.currentIndex = 0;
-            }
-          }
-          break;
-        }
-
-        case 'round3': {
-          const difficultIds = allNew.filter(id => prev.round2Results[id] === false);
-          if (prev.currentIndex + 1 < difficultIds.length) {
-            next.currentIndex = prev.currentIndex + 1;
-          } else {
-            next.phase = 'round4';
-            next.currentIndex = 0;
-          }
-          break;
-        }
-
-        case 'round4': {
-          // 记录结果
-          if (result !== undefined) {
-            next.round4Results = {
-              ...prev.round4Results,
-              [allNew[prev.currentIndex]]: result,
-            };
-            // 创建 ProgressRecord（异步）
-            const wordId = allNew[prev.currentIndex];
-            createNewProgress(wordId, result);
-          }
-          if (prev.currentIndex + 1 < allNew.length) {
-            next.currentIndex = prev.currentIndex + 1;
-          } else {
-            next.phase = 'summary';
-            next.currentIndex = 0;
-            // 写入 dailyLog 和更新设置（异步）
-            finalizeDay(allNew.length, prev.reviewWords.length);
-          }
-          break;
-        }
-
-        case 'summary':
-          // 不需要 advance
-          break;
+    if (session.phase === 'review') {
+      if (nextIndex < session.reviewWords.length) {
+        session.currentIndex = nextIndex;
+        await db.saveSession(session);
+        await setSessionState(session);
+        return;
       }
 
-      // 持久化
-      persistSession(next);
-      return next;
-    });
-  }, [persistSession]);
+      session.phase = session.newWords.length > 0 ? 'round1' : 'summary';
+      session.currentIndex = 0;
+      await db.saveSession(session);
 
-  // 加载更多新词（ROUND_1 专用）
-  const loadMoreNewWords = useCallback(async (count: number) => {
-    setInternal(prev => {
-      const startIdx = currentWordIndex + prev.newWords.length + prev.extraNewWords.length;
-      const moreWords = words.slice(startIdx, startIdx + count).map(w => w.id);
-      const next = {
+      if (session.phase === 'summary') {
+        await finalizeDay(session);
+        setState(prev => ({
+          ...prev,
+          phase: 'summary',
+          currentIndex: 0,
+          totalInPhase: 0,
+          currentEntry: null,
+          currentProgress: null,
+        }));
+        return;
+      }
+
+      await setSessionState(session);
+      return;
+    }
+
+    if (session.phase === 'round1') {
+      if (nextIndex < session.newWords.length) {
+        session.currentIndex = nextIndex;
+        await db.saveSession(session);
+        await setSessionState(session);
+        return;
+      }
+
+      session.phase = 'summary';
+      session.currentIndex = 0;
+      await db.saveSession(session);
+      await finalizeDay(session);
+      setState(prev => ({
         ...prev,
-        extraNewWords: [...prev.extraNewWords, ...moreWords],
-      };
-      persistSession(next);
-      return next;
-    });
-  }, [words, currentWordIndex, persistSession]);
-
-  const skip = useCallback(() => {
-    advance();
-  }, [advance]);
-
-  // ---- 构建对外状态 ----
-  const currentWordId = getCurrentWordId(internal);
-  const currentEntry = currentWordId
-    ? wordsMapRef.current.get(currentWordId) ?? null
-    : null;
-  const currentProgress = currentWordId
-    ? progressMapRef.current.get(currentWordId) ?? null
-    : null;
-
-  const allNew = [...internal.newWords, ...internal.extraNewWords];
-  let totalInPhase = 0;
-  switch (internal.phase) {
-    case 'review':
-      totalInPhase = internal.reviewWords.length;
-      break;
-    case 'round1':
-    case 'round2':
-    case 'round4':
-      totalInPhase = allNew.length;
-      break;
-    case 'round3': {
-      const difficultIds = allNew.filter(id => internal.round2Results[id] === false);
-      totalInPhase = difficultIds.length;
-      break;
-    }
-    case 'summary':
-      totalInPhase = 0;
-      break;
-  }
-
-  const state: StudyState = {
-    phase: internal.phase,
-    currentEntry,
-    currentProgress,
-    currentIndex: internal.currentIndex,
-    totalInPhase,
-    globalWordIndex: currentWordIndex,
-    newWordsCount: internal.newWords.length + internal.extraNewWords.length,
-    reviewWordsCount: internal.reviewWords.length,
-    ready: initializedRef.current,
-  };
-
-  const actions: StudyActions = {
-    advance,
-    loadMoreNewWords,
-    skip,
-  };
-
-  return { state, actions };
-}
-
-// ---- 辅助函数（异步，不阻塞 UI） ----
-
-async function updateReviewProgress(wordId: string, correct: boolean) {
-  try {
-    const progress = await db.getProgress(wordId);
-    if (!progress) return;
-    const updated = handleReviewResult(progress, correct);
-    await db.saveProgress(updated);
-  } catch (err) {
-    console.error('updateReviewProgress failed:', err);
-  }
-}
-
-async function createNewProgress(wordId: string, remembered: boolean) {
-  try {
-    const wordsMap = await loadWordsMapForProgress();
-    const word = wordsMap.get(wordId);
-    if (!word) return;
-
-    // 确定 bookId
-    const parts = wordId.split('-');
-    const bookId = parts[0] as BookId;
-
-    const progress = createProgressRecord(wordId, word.word, bookId);
-    // 模糊 → 标记为优先复习（更早复习日期）
-    if (!remembered) {
-      progress.nextReviewDate = addDays(getTodayString(), 0); // 明天就复习
-    }
-    await db.saveProgress(progress);
-  } catch (err) {
-    console.error('createNewProgress failed:', err);
-  }
-}
-
-async function loadWordsMapForProgress(): Promise<Map<string, WordEntry>> {
-  const allBooks = await db.getAllBookIds();
-  const map = new Map<string, WordEntry>();
-  for (const bookId of allBooks) {
-    const wb = await db.getWordbook(bookId);
-    if (wb) {
-      for (const w of wb.words) {
-        map.set(w.id, w);
-      }
+        phase: 'summary',
+        currentIndex: 0,
+        totalInPhase: 0,
+        currentEntry: null,
+        currentProgress: null,
+      }));
     }
   }
-  return map;
-}
 
-async function finalizeDay(newWordsCount: number, reviewWordsCount: number) {
-  try {
-    const today = getTodayString();
-    const settings = await db.getSettings();
+  function getSessionViewState(session: SessionRecord): Pick<StudyState, 'phase' | 'currentIndex' | 'totalInPhase' | 'currentEntry' | 'currentProgress'> {
+    const ids = getPhaseWordIds(session);
+    const currentWordId = ids[session.currentIndex];
+    const currentEntry = findEntry(bookWords, currentWordId);
 
-    // 计算连续打卡天数
-    let streakCount = 1;
-    if (settings) {
-      const lastDate = settings.lastStudyDate;
-      const yesterday = addDays(today, -1);
-      if (lastDate === yesterday) {
-        streakCount = (settings.streakCount || 0) + 1;
-      } else if (lastDate === today) {
-        streakCount = settings.streakCount || 1;
-      }
-    }
-
-    // 写入 dailyLog
-    const dailyLog = {
-      date: today,
-      newWordsCount,
-      reviewWordsCount,
-      currentBookId: settings?.currentBookId ?? 'cet6' as BookId,
+    return {
+      phase: session.phase,
+      currentIndex: session.currentIndex,
+      totalInPhase: getTotalInPhase(session.phase, session),
+      currentEntry,
+      currentProgress: null,
     };
-    await db.saveDailyLog(dailyLog);
+  }
 
-    // 更新 settings
-    if (settings) {
-      const newIndex = settings.currentWordIndex + newWordsCount;
-      await db.saveSettings({
-        ...settings,
-        currentWordIndex: newIndex,
-        streakCount,
-        lastStudyDate: today,
-      });
+  function getAdvancedSession(session: SessionRecord): { nextSession: SessionRecord; finished: boolean } {
+    const nextIndex = session.currentIndex + 1;
+
+    if (session.phase === 'review') {
+      if (nextIndex < session.reviewWords.length) {
+        return {
+          nextSession: { ...session, currentIndex: nextIndex },
+          finished: false,
+        };
+      }
+
+      const nextPhase: StudyPhase = session.newWords.length > 0 ? 'round1' : 'summary';
+      return {
+        nextSession: { ...session, phase: nextPhase, currentIndex: 0 },
+        finished: nextPhase === 'summary',
+      };
     }
 
-    // 清除 session
-    await db.clearSession();
-  } catch (err) {
-    console.error('finalizeDay failed:', err);
+    if (session.phase === 'round1') {
+      if (nextIndex < session.newWords.length) {
+        return {
+          nextSession: { ...session, currentIndex: nextIndex },
+          finished: false,
+        };
+      }
+
+      return {
+        nextSession: { ...session, phase: 'summary', currentIndex: 0 },
+        finished: true,
+      };
+    }
+
+    return {
+      nextSession: session,
+      finished: true,
+    };
   }
+
+  async function markCurrent(status: 'fuzzy' | 'mastered') {
+    const s = stateRef.current;
+    if (!s.ready || s.advancing || markingRef.current || !s.currentEntry) return;
+    markingRef.current = true;
+    setState(prev => ({ ...prev, advancing: true }));
+
+    try {
+      const session = await db.getSession();
+      if (!session) return;
+
+      const today = getTodayString();
+      const fromReview = s.phase === 'review';
+      const existing = fromReview ? await db.getProgress(s.currentEntry.id) : null;
+      const progress = status === 'fuzzy'
+        ? createFuzzyProgress(s.currentEntry, bookId, today, existing, fromReview)
+        : createMasteredProgress(s.currentEntry, bookId, today, existing, fromReview);
+
+      if (fromReview) {
+        session.reviewResults[s.currentEntry.id] = status === 'mastered';
+      } else {
+        session.processedNewWordIds = [
+          ...(session.processedNewWordIds || []),
+          s.currentEntry.id,
+        ];
+        session.consumedNewWordIds = [
+          ...(session.consumedNewWordIds || []),
+          s.currentEntry.id,
+        ];
+      }
+
+      const { nextSession, finished } = getAdvancedSession(session);
+      const nextProcessedCount = nextSession.processedNewWordIds?.length || 0;
+
+      setState(prev => ({
+        ...prev,
+        advancing: true,
+        processedNewWordsCount: nextProcessedCount,
+        ...(finished
+          ? {
+              phase: 'summary' as StudyPhase,
+              currentIndex: 0,
+              totalInPhase: 0,
+              currentEntry: null,
+              currentProgress: null,
+            }
+          : getSessionViewState(nextSession)),
+      }));
+
+      await db.saveProgress(progress);
+      void db.enqueueSync('progress', progress.wordId, progress);
+
+      if (finished) {
+        await db.saveSession(nextSession);
+        await finalizeDay(nextSession);
+      } else {
+        await db.saveSession(nextSession);
+      }
+    } catch (error) {
+      console.error('Failed to mark current word:', error);
+      setState(prev => ({
+        ...prev,
+        sessionError: '保存学习进度失败，请重试',
+      }));
+    } finally {
+      markingRef.current = false;
+      setState(prev => ({ ...prev, advancing: false }));
+    }
+  }
+
+  async function finalizeDay(session: SessionRecord) {
+    const today = getTodayString();
+    const processedNewCount = session.processedNewWordIds?.length || 0;
+
+    const dailyLog = await db.getDailyLog(today);
+    const newLog = {
+      date: today,
+      newWordsCount: processedNewCount,
+      reviewWordsCount: session.reviewWords.length,
+      currentBookId: bookId,
+    };
+    await db.saveDailyLog(dailyLog ? { ...dailyLog, ...newLog } : newLog);
+    void db.enqueueSync('dailyLog', today, newLog);
+
+    const settings = await db.getSettings();
+    if (settings) {
+      const yesterdayStr = addOneDay(today, -1);
+      const isConsecutive = settings.lastStudyDate === yesterdayStr;
+      const studiedTodayBefore = settings.lastStudyDate === today;
+      const newStreak = studiedTodayBefore
+        ? settings.streakCount
+        : isConsecutive
+          ? settings.streakCount + 1
+          : 1;
+
+      const updatedSettings = {
+        ...settings,
+        lastStudyDate: today,
+        streakCount: newStreak,
+        currentWordIndexByBook: {
+          ...settings.currentWordIndexByBook,
+          [bookId]: session.plannedNextWordIndex,
+        },
+      };
+      await db.saveSettings(updatedSettings);
+      void db.enqueueSync('settings', 'settings', updatedSettings);
+    }
+
+    await db.clearSession();
+  }
+
+  const finishTodayEarly = useCallback(async () => {
+    const session = await db.getSession();
+    if (!session) return;
+    await finalizeDay(session);
+  }, [bookId]);
+
+  const restartSession = useCallback(async () => {
+    await db.clearSession();
+    markingRef.current = false;
+    setState(prev => ({
+      ...prev,
+      ready: false,
+      advancing: false,
+      sessionError: '',
+    }));
+    await startNewSession(false);
+  }, [bookId, bookWords, currentWordIndex, dailyMinNewWords]);
+
+  const markFuzzy = useCallback(async () => {
+    await markCurrent('fuzzy');
+  }, [bookId]);
+
+  const markMastered = useCallback(async () => {
+    await markCurrent('mastered');
+  }, [bookId]);
+
+  return {
+    state,
+    actions: {
+      markFuzzy,
+      markMastered,
+      finishTodayEarly,
+      restartSession,
+    },
+  };
+}
+
+function addOneDay(dateStr: string, days: number): string {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() + days);
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }

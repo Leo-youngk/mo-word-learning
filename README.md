@@ -1,141 +1,135 @@
-# 默 (Mo) — 英语背单词 PWA
+﻿# 榛?(Mo) 鈥?鑻辫鑳屽崟璇?PWA
 
-> 安静地记单词。Apple 式极简黑白风格，四轮递进学习流程，基于间隔重复。
+> 瀹夐潤鍦拌鍗曡瘝銆侫pple 寮忔瀬绠€榛戠櫧椋庢牸锛屽洓杞€掕繘瀛︿範娴佺▼锛屽熀浜庨棿闅旈噸澶嶃€?
+## 鎶€鏈爤
 
-## 技术栈
-
-| 层面 | 选型 |
+| 灞傞潰 | 閫夊瀷 |
 |------|------|
-| 框架 | React 18 + TypeScript |
-| 构建 | Vite 6 |
+| 妗嗘灦 | React 18 + TypeScript |
+| 鏋勫缓 | Vite 6 |
 | PWA | vite-plugin-pwa (Workbox) |
-| 存储 | IndexedDB (idb) |
-| 发音 | Web Speech API |
-| AI 释义 | DeepSeek API |
-| 样式 | 原生 CSS + CSS Variables |
+| 瀛樺偍 | IndexedDB (idb) |
+| 鍙戦煶 | Web Speech API |
+| AI 閲婁箟 | DeepSeek API |
+| 鏍峰紡 | 鍘熺敓 CSS + CSS Variables |
 
-## 快速开始
-
+## 蹇€熷紑濮?
 ```bash
-# 安装依赖
+# 瀹夎渚濊禆
 npm install
 
-# 本地开发
-npm run dev
+# 鏈湴寮€鍙?npm run dev
 
-# 构建生产版本
+# 鏋勫缓鐢熶骇鐗堟湰
 npm run build
 
-# 预览构建结果
+# 棰勮鏋勫缓缁撴灉
 npm run preview
 ```
 
-## 项目结构
+## 椤圭洰缁撴瀯
 
 ```
 mo/
-├── public/
-│   ├── icon-192.png / icon-512.png   ← 应用图标
-│   └── data/
-│       ├── cet4.json    (4,544 词)
-│       ├── cet6.json    (3,992 词)
-│       ├── kaoyan.json  (5,047 词)
-│       └── toefl.json   (10,367 词)
-├── scripts/
-│   ├── prepare-vocab.mjs     ← 词库数据处理脚本
-│   ├── generate-icons.mjs    ← PNG 图标生成脚本
-│   └── generate-icons.html   ← 浏览器图标生成器
-├── src/
-│   ├── App.tsx               ← 根组件 / 视图路由
-│   ├── main.tsx
-│   ├── types/index.ts        ← 全局类型
-│   ├── styles/global.css     ← 全局样式
-│   ├── lib/
-│   │   ├── db.ts             ← IndexedDB 封装
-│   │   ├── scheduler.ts      ← 间隔重复算法
-│   │   └── ai.ts             ← DeepSeek API
-│   ├── hooks/
-│   │   ├── useStudySession.ts ← 学习状态机
-│   │   ├── useWordbook.ts    ← 词库管理
-│   │   └── useSpeech.ts      ← 发音
-│   └── components/
-│       ├── Welcome.tsx        ← 首次欢迎页
-│       ├── CardDisplay.tsx    ← ROUND_1 首次相遇
-│       ├── CardRecall.tsx     ← ROUND_2 主动回忆
-│       ├── CardCloze.tsx      ← ROUND_3 语境填空
-│       ├── CardConfirm.tsx    ← ROUND_4 最终确认
-│       ├── ReviewCard.tsx     ← 复习卡片
-│       ├── DaySummary.tsx     ← 每日总结
-│       ├── StatsPanel.tsx     ← 统计面板
-│       ├── Settings.tsx       ← 设置页
-│       ├── SpeakButton.tsx    ← 发音按钮
-│       ├── ProgressDots.tsx   ← 进度点
-│       └── AiExplain.tsx     ← AI 释义
-├── vite.config.ts
-├── tsconfig.json
-└── package.json
+鈹溾攢鈹€ public/
+鈹?  鈹溾攢鈹€ icon-192.png / icon-512.png   鈫?搴旂敤鍥炬爣
+鈹?  鈹斺攢鈹€ data/
+鈹?      鈹溾攢鈹€ cet4.json    (4,544 璇?
+鈹?      鈹溾攢鈹€ cet6.json    (3,992 璇?
+鈹?      鈹斺攢鈹€ toefl.json   (10,367 璇?
+鈹溾攢鈹€ scripts/
+鈹?  鈹溾攢鈹€ prepare-vocab.mjs     鈫?璇嶅簱鏁版嵁澶勭悊鑴氭湰
+鈹?  鈹溾攢鈹€ generate-icons.mjs    鈫?PNG 鍥炬爣鐢熸垚鑴氭湰
+鈹?  鈹斺攢鈹€ generate-icons.html   鈫?娴忚鍣ㄥ浘鏍囩敓鎴愬櫒
+鈹溾攢鈹€ src/
+鈹?  鈹溾攢鈹€ App.tsx               鈫?鏍圭粍浠?/ 瑙嗗浘璺敱
+鈹?  鈹溾攢鈹€ main.tsx
+鈹?  鈹溾攢鈹€ types/index.ts        鈫?鍏ㄥ眬绫诲瀷
+鈹?  鈹溾攢鈹€ styles/global.css     鈫?鍏ㄥ眬鏍峰紡
+鈹?  鈹溾攢鈹€ lib/
+鈹?  鈹?  鈹溾攢鈹€ db.ts             鈫?IndexedDB 灏佽
+鈹?  鈹?  鈹溾攢鈹€ scheduler.ts      鈫?闂撮殧閲嶅绠楁硶
+鈹?  鈹?  鈹斺攢鈹€ ai.ts             鈫?DeepSeek API
+鈹?  鈹溾攢鈹€ hooks/
+鈹?  鈹?  鈹溾攢鈹€ useStudySession.ts 鈫?瀛︿範鐘舵€佹満
+鈹?  鈹?  鈹溾攢鈹€ useWordbook.ts    鈫?璇嶅簱绠＄悊
+鈹?  鈹?  鈹斺攢鈹€ useSpeech.ts      鈫?鍙戦煶
+鈹?  鈹斺攢鈹€ components/
+鈹?      鈹溾攢鈹€ Welcome.tsx        鈫?棣栨娆㈣繋椤?鈹?      鈹溾攢鈹€ CardDisplay.tsx    鈫?ROUND_1 棣栨鐩搁亣
+鈹?      鈹溾攢鈹€ DaySummary.tsx     鈫?姣忔棩鎬荤粨
+鈹?      鈹溾攢鈹€ Settings.tsx       鈫?璁剧疆椤?鈹?      鈹溾攢鈹€ SpeakButton.tsx    鈫?鍙戦煶鎸夐挳
+鈹?      鈹溾攢鈹€ ProgressDots.tsx   鈫?杩涘害鐐?鈹?      鈹斺攢鈹€ AiExplain.tsx     鈫?AI 閲婁箟
+鈹溾攢鈹€ vite.config.ts
+鈹溾攢鈹€ tsconfig.json
+鈹斺攢鈹€ package.json
 ```
 
-## 学习流程
+## 瀛︿範娴佺▼
 
 ```
-REVIEW → ROUND_1 (首次相遇) → ROUND_2 (主动回忆) → ROUND_3 (语境填空) → ROUND_4 (最终确认) → SUMMARY
+REVIEW 鈫?ROUND_1 (棣栨鐩搁亣) 鈫?ROUND_2 (涓诲姩鍥炲繂) 鈫?ROUND_3 (璇濉┖) 鈫?ROUND_4 (鏈€缁堢‘璁? 鈫?SUMMARY
 ```
 
-- **REVIEW**: 复习到期旧词（中文→英文 / 例句填空）
-- **ROUND_1**: 浏览新词，建立第一印象
-- **ROUND_2**: 看中文回忆英文，标记困难词
-- **ROUND_3**: 仅对困难词例句填空，不做对错判断
-- **ROUND_4**: 最终确认今日所有新词
+- **REVIEW**: 澶嶄範鍒版湡鏃ц瘝锛堜腑鏂団啋鑻辨枃 / 渚嬪彞濉┖锛?- **ROUND_1**: 娴忚鏂拌瘝锛屽缓绔嬬涓€鍗拌薄
+- **ROUND_2**: 鐪嬩腑鏂囧洖蹇嗚嫳鏂囷紝鏍囪鍥伴毦璇?- **ROUND_3**: 浠呭鍥伴毦璇嶄緥鍙ュ～绌猴紝涓嶅仛瀵归敊鍒ゆ柇
+- **ROUND_4**: 鏈€缁堢‘璁や粖鏃ユ墍鏈夋柊璇?
+## 闂撮殧閲嶅
 
-## 间隔重复
-
-| 阶段 | 间隔 |
+| 闃舵 | 闂撮殧 |
 |------|------|
-| 0 | 当天 |
-| 1 | 1 天后 |
-| 2 | 3 天后 |
-| 3 | 7 天后 |
-| 4 | 14 天后 |
-| 5 | 毕业 |
+| 0 | 褰撳ぉ |
+| 1 | 1 澶╁悗 |
+| 2 | 3 澶╁悗 |
+| 3 | 7 澶╁悗 |
+| 4 | 14 澶╁悗 |
+| 5 | 姣曚笟 |
 
-- 答对 → 阶段 +1
-- 答错 → 回退到阶段 1
-- 连续 2 次答错 → 标记为顽固词（优先复习）
+- 绛斿 鈫?闃舵 +1
+- 绛旈敊 鈫?鍥為€€鍒伴樁娈?1
+- 杩炵画 2 娆＄瓟閿?鈫?鏍囪涓洪〗鍥鸿瘝锛堜紭鍏堝涔狅級
 
-## 词库数据处理
+## 璇嶅簱鏁版嵁澶勭悊
 
 ```bash
-# 1. 从 jsDelivr CDN 下载原始数据到 temp_vocab/
-#    数据源: KyleBing/english-vocabulary (json-sentence 版本)
+# 1. 浠?jsDelivr CDN 涓嬭浇鍘熷鏁版嵁鍒?temp_vocab/
+#    鏁版嵁婧? KyleBing/english-vocabulary (json-sentence 鐗堟湰)
 
-# 2. 运行处理脚本
+# 2. 杩愯澶勭悊鑴氭湰
 node scripts/prepare-vocab.mjs
 
-# 输出: public/data/cet4.json, cet6.json, kaoyan.json, toefl.json
 ```
 
-## 部署到 Vercel
+## 閮ㄧ讲鍒?Vercel
 
-1. 将项目推送到 GitHub
-2. 在 Vercel 中导入项目
-3. 框架预设选择 **Vite**
-4. 构建命令: `npm run build`
-5. 输出目录: `dist`
-6. 部署完成后访问分配域名
+1. 灏嗛」鐩帹閫佸埌 GitHub
+2. 鍦?Vercel 涓鍏ラ」鐩?3. 妗嗘灦棰勮閫夋嫨 **Vite**
+4. 鏋勫缓鍛戒护: `npm run build`
+5. 杈撳嚭鐩綍: `dist`
+6. 閮ㄧ讲瀹屾垚鍚庤闂垎閰嶅煙鍚?
+## iPhone 娣诲姞鍒颁富灞忓箷
 
-## iPhone 添加到主屏幕
+1. Safari 涓墦寮€閮ㄧ讲鍚庣殑 URL
+2. 鐐瑰嚮搴曢儴銆屽垎浜€嶆寜閽紙鈫戯級
+3. 閫夋嫨銆屾坊鍔犲埌涓诲睆骞曘€?4. 纭鍚嶇О銆岄粯銆嶏紝鐐瑰嚮銆屾坊鍔犮€?5. 涓诲睆骞曞嚭鐜般€岄粯銆嶅浘鏍囷紝鐐瑰嚮鍗冲彲浣滀负鐙珛 App 浣跨敤
 
-1. Safari 中打开部署后的 URL
-2. 点击底部「分享」按钮（↑）
-3. 选择「添加到主屏幕」
-4. 确认名称「默」，点击「添加」
-5. 主屏幕出现「默」图标，点击即可作为独立 App 使用
+## 宸茬煡闄愬埗
 
-## 已知限制
+1. **鍥炬爣涓虹櫧鑹插崰浣嶅浘**锛氶渶鍦ㄦ祻瑙堝櫒涓墦寮€ `scripts/generate-icons.html` 鐢熸垚甯︺€岄粯銆嶅瓧鐨勬寮忓浘鏍囷紝鏇挎崲 `public/icon-192.png` 鍜?`public/icon-512.png`
+2. **AI 閲婁箟闇€瑕佽仈缃?*锛氶渶瑕佺敤鎴疯嚜琛屽～鍐?DeepSeek API Key
+3. **Web Speech API**锛氶儴鍒嗘祻瑙堝櫒/绯荤粺鍙兘涓嶆敮鎸佺绾胯闊筹紙iOS Safari 鏀寔鐨勮闊宠緝灏戯級
+4. **璇嶅簱瀵煎叆瀵煎嚭**锛氬鍏ヤ細瀹屽叏瑕嗙洊褰撳墠杩涘害
+5. **瑙︽帶鎵嬪娍**锛氬乏鍙虫粦鍔ㄥ湪閮ㄥ垎 Android 娴忚鍣ㄤ笂鍙兘鍐茬獊
 
-1. **图标为白色占位图**：需在浏览器中打开 `scripts/generate-icons.html` 生成带「默」字的正式图标，替换 `public/icon-192.png` 和 `public/icon-512.png`
-2. **AI 释义需要联网**：需要用户自行填写 DeepSeek API Key
-3. **Web Speech API**：部分浏览器/系统可能不支持离线语音（iOS Safari 支持的语音较少）
-4. **词库导入导出**：导入会完全覆盖当前进度
-5. **触控手势**：左右滑动在部分 Android 浏览器上可能冲突
+## 云同步后端
+
+本项目采用离线优先：IndexedDB 是主存储，Supabase 只保存 settings / progress / dailyLog 的同步镜像。
+
+Vercel 环境变量：
+
+```bash
+SUPABASE_URL=https://vulhknwigcokyubftpwx.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=你的 Supabase service_role key
+MO_SYNC_TOKEN=你自己生成的长随机同步令牌
+```
+
+部署到 Vercel 后，在设置页开启「云同步」，输入同一个 `MO_SYNC_TOKEN`，点击「立即同步」即可。

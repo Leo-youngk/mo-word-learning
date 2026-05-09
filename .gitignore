@@ -2,10 +2,16 @@ node_modules
 dist
 .env
 .env.local
+vercel配置.txt
 .DS_Store
 temp_vocab
 english-vocabulary
 vocab.zip
 *.log
+*.err
+.claude
+output
 .qwen
 .vscode
+
+.vercel

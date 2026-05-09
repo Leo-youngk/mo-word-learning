@@ -2,25 +2,22 @@
 // CardDisplay — ROUND_1 首次相遇卡片
 // ============================================================
 
-import { useState } from 'react';
 import type { WordEntry } from '../types';
 import SpeakButton from './SpeakButton';
 
 interface CardDisplayProps {
   entry: WordEntry;
-  onNext: () => void;
-  showContinueOption: boolean;
-  onContinueLearning: () => void;
+  onFuzzy: () => void;
+  onMastered: () => void;
+  disabled?: boolean;
 }
 
 export default function CardDisplay({
   entry,
-  onNext,
-  showContinueOption,
-  onContinueLearning,
+  onFuzzy,
+  onMastered,
+  disabled = false,
 }: CardDisplayProps) {
-  const [revealed, setRevealed] = useState(true);
-
   return (
     <div className="card card-display">
       <div className="card__content">
@@ -67,15 +64,13 @@ export default function CardDisplay({
         )}
       </div>
 
-      <div className="card__actions">
-        <button className="btn btn--primary" onClick={onNext}>
-          下一个
+      <div className="card__actions card__actions--split">
+        <button className="btn btn--danger card__pill-btn" onClick={onFuzzy} disabled={disabled}>
+          模糊
         </button>
-        {showContinueOption && (
-          <button className="btn btn--secondary" onClick={onContinueLearning}>
-            继续学习
-          </button>
-        )}
+        <button className="btn btn--success card__pill-btn card__pill-btn--primary" onClick={onMastered} disabled={disabled}>
+          已掌握
+        </button>
       </div>
     </div>
   );

@@ -20,7 +20,6 @@ const OUT_DIR = join(ROOT, 'public', 'data');
 const BOOK_FILES = {
   cet4: ['CET4_1.json', 'CET4_2.json', 'CET4_3.json', 'CET4luan_1.json', 'CET4luan_2.json'],
   cet6: ['CET6_1.json', 'CET6_2.json', 'CET6_3.json', 'CET6luan_1.json'],
-  kaoyan: ['KaoYan_1.json', 'KaoYan_2.json', 'KaoYan_3.json', 'KaoYanluan_1.json'],
   toefl: ['TOEFL_2.json', 'TOEFL_3.json'],
 };
 
@@ -84,6 +83,23 @@ function transformEntry(raw, bookId) {
   };
 }
 
+// ---- 统计每个词出现在哪些词库中 ----
+function buildWordBookMap(allBooks) {
+  const wordBookMap = new Map(); // word lowercase -> Set<bookId>
+
+  for (const [bookId, entries] of Object.entries(allBooks)) {
+    for (const entry of entries) {
+      const key = entry.word.toLowerCase();
+      if (!wordBookMap.has(key)) {
+        wordBookMap.set(key, new Set());
+      }
+      wordBookMap.get(key).add(bookId);
+    }
+  }
+
+  return wordBookMap;
+}
+
 // ---- 主流程 ----
 function main() {
   if (!existsSync(TEMP_DIR)) {
@@ -95,6 +111,8 @@ function main() {
     mkdirSync(OUT_DIR, { recursive: true });
   }
 
+  // 第一步：读取并转换所有词库
+  const allBooks = {};
   const stats = {};
 
   for (const [bookId, files] of Object.entries(BOOK_FILES)) {
@@ -131,18 +149,40 @@ function main() {
     const unique = deduplicateByWord(transformed);
     console.log(`  去重后: ${unique.length} 条`);
 
-    // 输出
-    const outPath = join(OUT_DIR, `${bookId}.json`);
-    writeFileSync(outPath, JSON.stringify(unique), 'utf-8');
-    console.log(`  → 写入 ${outPath}`);
-
+    allBooks[bookId] = unique;
     stats[bookId] = unique.length;
+  }
+
+  // 第二步：统计每个词出现在哪些词库中
+  console.log('\n统计跨词库重复词...');
+  const wordBookMap = buildWordBookMap(allBooks);
+
+  // 第三步：写入 appearsInBooks 并输出
+  for (const [bookId, entries] of Object.entries(allBooks)) {
+    const entriesWithBooks = entries.map(entry => {
+      const appearsInBooks = Array.from(wordBookMap.get(entry.word.toLowerCase()) || []);
+      return {
+        ...entry,
+        appearsInBooks,
+      };
+    });
+
+    const outPath = join(OUT_DIR, `${bookId}.json`);
+    writeFileSync(outPath, JSON.stringify(entriesWithBooks), 'utf-8');
+    console.log(`  → 写入 ${outPath} (${entriesWithBooks.length} 词)`);
+  }
+
+  // 统计核心词（出现在 3 个及以上词库中）
+  let coreWords = 0;
+  for (const [word, books] of wordBookMap.entries()) {
+    if (books.size >= 3) coreWords++;
   }
 
   console.log('\n===== 数据处理完成 =====');
   for (const [bookId, count] of Object.entries(stats)) {
     console.log(`  ${bookId}: ${count} 词`);
   }
+  console.log(`  核心词（≥3 词库）: ${coreWords} 个`);
   console.log('========================\n');
 }
 

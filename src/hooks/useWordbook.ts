@@ -3,7 +3,7 @@
 // ============================================================
 
 import { useState, useCallback, useEffect, useRef } from 'react';
-import type { BookId, WordEntry, WordbookRecord } from '../types';
+import type { BookId, WordEntry } from '../types';
 import * as db from '../lib/db';
 
 interface UseWordbookReturn {
@@ -53,7 +53,7 @@ export function useWordbook(initialBookId: BookId): UseWordbookReturn {
         // 1. 加载设置
         const settings = await db.getSettings();
         const targetBookId = settings?.currentBookId ?? initialBookId;
-        const targetIndex = settings?.currentWordIndex ?? 0;
+        const targetIndex = settings?.currentWordIndexByBook?.[targetBookId] ?? 0;
 
         setBookId(targetBookId);
         setCurrentIndexState(targetIndex);
@@ -93,9 +93,10 @@ export function useWordbook(initialBookId: BookId): UseWordbookReturn {
         await db.saveWordbook({ bookId: newBookId, words: fetchedWords });
       }
       setBookId(newBookId);
-      setCurrentIndexState(0);
+      const settings = await db.getSettings();
+      setCurrentIndexState(settings?.currentWordIndexByBook?.[newBookId] ?? 0);
       // 更新设置
-      await db.updateSettings({ currentBookId: newBookId, currentWordIndex: 0 });
+      await db.updateSettings({ currentBookId: newBookId });
       setLoading(false);
     } catch (err) {
       console.error('Failed to switch wordbook:', err);
@@ -105,8 +106,15 @@ export function useWordbook(initialBookId: BookId): UseWordbookReturn {
 
   const setCurrentIndex = useCallback(async (index: number) => {
     setCurrentIndexState(index);
-    await db.updateSettings({ currentWordIndex: index });
-  }, []);
+    const settings = await db.getSettings();
+    if (!settings) return;
+    await db.updateSettings({
+      currentWordIndexByBook: {
+        ...settings.currentWordIndexByBook,
+        [bookId]: index,
+      },
+    });
+  }, [bookId]);
 
   const finished = currentIndex >= words.length;
   const totalWords = words.length;

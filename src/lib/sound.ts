@@ -68,50 +68,32 @@ function warmUpAudioContext(ctx: AudioContext) {
     oscillator.stop(endAt);
     audioUnlocked = true;
   } catch {
-    // Ignore warm-up failures.
   }
+}
+
+function tryResumeSync(ctx: AudioContext): boolean {
+  if (ctx.state === 'running') {
+    warmUpAudioContext(ctx);
+    return true;
+  }
+
+  try {
+    const result = ctx.resume();
+    if (result && typeof result.then === 'function') {
+      result.then(() => {
+        warmUpAudioContext(ctx);
+      }).catch(() => {});
+    }
+  } catch {
+  }
+
+  return (ctx as any).state === 'running';
 }
 
 export function primeSound() {
   const ctx = getAudioContext();
   if (!ctx) return;
-
-  if (ctx.state === 'running') {
-    warmUpAudioContext(ctx);
-    return;
-  }
-
-  try {
-    void ctx.resume().then(() => {
-      if (ctx.state === 'running') {
-        warmUpAudioContext(ctx);
-      }
-    }).catch(() => undefined);
-  } catch {
-    // Ignore resume failures.
-  }
-}
-
-async function ensureAudioContextReady() {
-  const ctx = getAudioContext();
-  if (!ctx) return null;
-
-  const initialState = ctx.state;
-  if (initialState === 'running') {
-    return ctx;
-  }
-
-  try {
-    await ctx.resume();
-  } catch {
-    return null;
-  }
-
-  if (ctx.state === 'closed' || ctx.state === 'suspended') {
-    return null;
-  }
-
-  return ctx;
+  tryResumeSync(ctx);
 }
 
 function scheduleTone(ctx: AudioContext, tone: ToneSpec) {
@@ -134,21 +116,29 @@ function scheduleTone(ctx: AudioContext, tone: ToneSpec) {
   oscillator.stop(endAt + RAMP_OUT_PADDING_SECONDS);
 }
 
-function playToneSequence(tones: ToneSpec[]) {
+function playToneSequenceSync(tones: ToneSpec[]) {
   if (!soundEnabled) return;
 
-  void (async () => {
-    try {
-      const ctx = await ensureAudioContextReady();
-      if (!ctx) return;
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
 
-      for (const tone of tones) {
-        scheduleTone(ctx, tone);
-      }
-    } catch {
-      // Swallow playback failures so sound never blocks the study flow.
+    tryResumeSync(ctx);
+
+    if (ctx.state === 'suspended') {
+      void ctx.resume().then(() => {
+        for (const tone of tones) {
+          scheduleTone(ctx, tone);
+        }
+      }).catch(() => {});
+      return;
     }
-  })();
+
+    for (const tone of tones) {
+      scheduleTone(ctx, tone);
+    }
+  } catch {
+  }
 }
 
 export function isSoundEnabled() {
@@ -167,8 +157,7 @@ export function initSoundPreferences() {
 }
 
 export function playMasteredSound() {
-  primeSound();
-  playToneSequence([
+  playToneSequenceSync([
     { frequency: 523, durationMs: 80, volume: 0.28, type: 'sine' },
     { frequency: 659, durationMs: 80, volume: 0.30, delayMs: 60, type: 'sine' },
     { frequency: 784, durationMs: 140, volume: 0.22, delayMs: 120, type: 'sine' },
@@ -176,8 +165,7 @@ export function playMasteredSound() {
 }
 
 export function playFuzzySound() {
-  primeSound();
-  playToneSequence([
+  playToneSequenceSync([
     { frequency: 392, durationMs: 100, volume: 0.22, type: 'sine' },
     { frequency: 330, durationMs: 150, volume: 0.18, delayMs: 60, type: 'sine' },
   ]);

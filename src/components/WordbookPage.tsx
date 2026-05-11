@@ -92,7 +92,10 @@ export default function WordbookPage({ bookId, words }: WordbookPageProps) {
   const visibleWords = useMemo(() => {
     return words.filter(word => {
       const status = getWordUserStatus(progressMap.get(progressService.getProgressGlobalKey(word)));
-      if (filter !== 'all' && status !== filter) return false;
+      if (filter === 'all') {
+        return status !== 'mastered' && matchesSearch(word, query);
+      }
+      if (status !== filter) return false;
       return matchesSearch(word, query);
     });
   }, [words, progressMap, filter, query]);

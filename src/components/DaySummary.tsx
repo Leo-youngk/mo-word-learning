@@ -1,13 +1,10 @@
-// ============================================================
-// DaySummary — 今日总结页
-// ============================================================
-
 interface DaySummaryProps {
   streakCount: number;
   newWordsCount: number;
   reviewWordsCount: number;
   totalLearned: number;
   bookFinished: boolean;
+  onContinueStudy?: () => void;
 }
 
 export default function DaySummary({
@@ -16,6 +13,7 @@ export default function DaySummary({
   reviewWordsCount,
   totalLearned,
   bookFinished,
+  onContinueStudy,
 }: DaySummaryProps) {
   return (
     <div className="card card-summary">
@@ -36,6 +34,16 @@ export default function DaySummary({
 
         {bookFinished && (
           <p className="card-summary__finished">本词库已全部学完！</p>
+        )}
+
+        {!bookFinished && onContinueStudy && (
+          <button
+            className="home__primary-btn"
+            onClick={onContinueStudy}
+            style={{ marginTop: '20px' }}
+          >
+            继续学习 →
+          </button>
         )}
 
         <p className="card-summary__bye">明天见</p>

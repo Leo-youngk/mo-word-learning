@@ -1,132 +1,115 @@
-// ============================================================
-// 词库加载与管理 Hook —「默」Mo
-// ============================================================
-
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import type { BookId, WordEntry } from '../types';
 import * as db from '../lib/db';
 
 interface UseWordbookReturn {
-  /** 当前词库 ID */
   bookId: BookId;
-  /** 当前词库的全部词条 */
   words: WordEntry[];
-  /** 是否正在加载 */
   loading: boolean;
-  /** 当前学到第几个词 */
+  error: string;
   currentIndex: number;
-  /** 切换词库 */
   switchBook: (newBookId: BookId) => Promise<void>;
-  /** 更新当前进度索引 */
   setCurrentIndex: (index: number) => Promise<void>;
-  /** 本词库是否已学完 */
   finished: boolean;
-  /** 总词数 */
   totalWords: number;
 }
 
-/**
- * 从 public/data/ 加载 JSON 词库文件
- */
+function normalizeWord(word: string): string {
+  return word.trim().toLowerCase();
+}
+
+function hydrateWords(words: WordEntry[]): WordEntry[] {
+  return words.map(entry => ({
+    ...entry,
+    normalizedWord: entry.normalizedWord || normalizeWord(entry.word),
+  }));
+}
+
 async function fetchWordbook(bookId: BookId): Promise<WordEntry[]> {
   const response = await fetch(`/data/${bookId}.json`);
   if (!response.ok) {
     throw new Error(`Failed to load wordbook: ${bookId}`);
   }
-  return response.json();
+  const words = await response.json();
+  return hydrateWords(words);
 }
 
 export function useWordbook(initialBookId: BookId): UseWordbookReturn {
   const [bookId, setBookId] = useState<BookId>(initialBookId);
   const [words, setWords] = useState<WordEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [currentIndex, setCurrentIndexState] = useState(0);
-  const initialized = useRef(false);
 
-  // 初始化：从 IndexedDB 加载设置，再从缓存或网络加载词库
   useEffect(() => {
-    if (initialized.current) return;
-    initialized.current = true;
-
-    async function init() {
+    async function loadWordbook(targetBookId: BookId) {
+      setLoading(true);
+      setError('');
       try {
-        // 1. 加载设置
-        const settings = await db.getSettings();
-        const targetBookId = settings?.currentBookId ?? initialBookId;
-        const targetIndex = settings?.currentWordIndexByBook?.[targetBookId] ?? 0;
-
         setBookId(targetBookId);
-        setCurrentIndexState(targetIndex);
+        setCurrentIndexState(0);
 
-        // 2. 尝试从 IndexedDB 缓存加载
         const cached = await db.getWordbook(targetBookId);
         if (cached) {
-          setWords(cached.words);
+          const hydratedWords = hydrateWords(cached.words);
+          setWords(hydratedWords);
           setLoading(false);
           return;
         }
 
-        // 3. 从网络加载并缓存
         const fetchedWords = await fetchWordbook(targetBookId);
         setWords(fetchedWords);
         await db.saveWordbook({ bookId: targetBookId, words: fetchedWords });
         setLoading(false);
-      } catch (err) {
-        console.error('Failed to initialize wordbook:', err);
+      } catch (loadError) {
+        console.error('Failed to load wordbook:', loadError);
+        setWords([]);
+        setError('词库加载失败，请重试。');
         setLoading(false);
       }
     }
 
-    init();
+    loadWordbook(initialBookId);
   }, [initialBookId]);
 
   const switchBook = useCallback(async (newBookId: BookId) => {
     setLoading(true);
+    setError('');
     try {
-      // 检查缓存
       const cached = await db.getWordbook(newBookId);
       if (cached) {
-        setWords(cached.words);
+        setWords(hydrateWords(cached.words));
       } else {
         const fetchedWords = await fetchWordbook(newBookId);
         setWords(fetchedWords);
         await db.saveWordbook({ bookId: newBookId, words: fetchedWords });
       }
+
       setBookId(newBookId);
-      const settings = await db.getSettings();
-      setCurrentIndexState(settings?.currentWordIndexByBook?.[newBookId] ?? 0);
-      // 更新设置
-      await db.updateSettings({ currentBookId: newBookId });
+      setCurrentIndexState(0);
       setLoading(false);
-    } catch (err) {
-      console.error('Failed to switch wordbook:', err);
+    } catch (loadError) {
+      console.error('Failed to switch wordbook:', loadError);
+      setWords([]);
+      setError('词库加载失败，请重试。');
       setLoading(false);
+      throw loadError;
     }
   }, []);
 
   const setCurrentIndex = useCallback(async (index: number) => {
     setCurrentIndexState(index);
-    const settings = await db.getSettings();
-    if (!settings) return;
-    await db.updateSettings({
-      currentWordIndexByBook: {
-        ...settings.currentWordIndexByBook,
-        [bookId]: index,
-      },
-    });
-  }, [bookId]);
-
-  const finished = currentIndex >= words.length;
-  const totalWords = words.length;
+  }, []);
 
   return {
     bookId,
     words,
     loading,
+    error,
     currentIndex,
     switchBook,
     setCurrentIndex,
-    finished,
-    totalWords,
+    finished: currentIndex >= words.length,
+    totalWords: words.length,
   };
 }

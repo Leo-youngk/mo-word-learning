@@ -21,10 +21,6 @@ export interface CloudSyncResult {
   pulled: number;
 }
 
-function getSyncEndpoint(): string {
-  return '/api/sync';
-}
-
 function sanitizeSettings(settings: SettingsRecord): SettingsRecord {
   return {
     ...settings,
@@ -61,7 +57,7 @@ async function requestCloud<T>(
     throw new Error('缺少云同步令牌');
   }
 
-  const response = await fetch(getSyncEndpoint(), {
+  const response = await fetch('/api/sync', {
     method,
     headers: {
       Authorization: `Bearer ${settings.syncToken}`,
@@ -94,9 +90,7 @@ async function pushPending(settings: SettingsRecord): Promise<number> {
 }
 
 async function applyRemoteItem(item: RemoteSyncItem, localSettings: SettingsRecord): Promise<boolean> {
-  if (item.operation === 'delete') {
-    return false;
-  }
+  if (item.operation === 'delete') return false;
 
   if (item.entity === 'settings') {
     const remote = item.payload as Partial<SettingsRecord> | null;

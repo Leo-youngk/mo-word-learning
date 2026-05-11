@@ -26,6 +26,7 @@ export interface ExampleSentence {
 export interface WordEntry {
   id: string;                    // "cet6-abandon"
   word: string;
+  normalizedWord?: string;
   phoneticUs: string;
   phoneticUk: string;
   translations: Translation[];
@@ -47,6 +48,7 @@ export type WordStatus = 'fuzzy' | 'mastered';
 export interface ProgressRecord {
   wordId: string;
   word: string;
+  normalizedWord?: string;
   bookId: StoredBookId;
   status?: WordStatus;
   stage?: number;                // legacy 0-5

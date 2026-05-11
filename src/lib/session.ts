@@ -1,49 +1,73 @@
-import type { BookId, SessionRecord, WordEntry } from '../types';
-import { getTodayString } from './scheduler';
+// ============================================================
+// 会话验证与恢复 —「默」Mo
+// 核心原则：
+// 1. 跨天后旧 session 自动失效，需重新生成今日队列
+// 2. 会话有效性只看基本结构，不要求每个词都在词库中存在（词库可能已更新）
+// 3. 缺失的词会被 useStudySession 自动跳过
+// ============================================================
 
-const VALID_PHASES = new Set(['review', 'round1', 'summary']);
+import type { BookId, WordEntry, SessionRecord, StudyPhase } from '../types';
+import { validatePhaseValue } from './phase';
 
-function getPhaseIds(session: SessionRecord): string[] {
-  if (session.phase === 'review') return session.reviewWords;
-  if (session.phase === 'round1') return session.newWords;
-  return [];
+/**
+ * 验证 session 是否属于今天、词库匹配、结构基本完整。
+ * 不会检查词是否在词库中存在（词库可能已更新，缺失词会被跳过）。
+ */
+export function validateStudySession(
+  session: SessionRecord,
+  currentBookId: BookId,
+  bookWords: WordEntry[],
+): { valid: boolean; reason?: string } {
+  if (!session.date || !session.phase) {
+    return { valid: false, reason: 'session 缺少 date 或 phase' };
+  }
+
+  if (!validatePhaseValue(session.phase)) {
+    return { valid: false, reason: `未知 phase: ${session.phase}` };
+  }
+
+  // 词库不匹配，session 无效
+  if (session.bookId && session.bookId !== currentBookId) {
+    return { valid: false, reason: '词库已切换，旧 session 失效' };
+  }
+
+  // 阶段为 summary 时，结构有效
+  if (session.phase === 'summary') {
+    return { valid: true };
+  }
+
+  // 检查是否有词需要学习
+  const hasReviewWords = Array.isArray(session.reviewWords) && session.reviewWords.length > 0;
+  const hasNewWords = Array.isArray(session.newWords) && session.newWords.length > 0;
+
+  if (!hasReviewWords && !hasNewWords) {
+    return { valid: false, reason: 'session 中没有词需要学习' };
+  }
+
+  // 检查 currentIndex 是否合理
+  const totalInPhase = session.phase === 'review' ? session.reviewWords.length : session.newWords.length;
+  if (typeof session.currentIndex !== 'number' || session.currentIndex < 0) {
+    return { valid: false, reason: 'currentIndex 无效' };
+  }
+
+  // 即使 currentIndex 超出范围，也视为有效（会自动调整到合理位置）
+  return { valid: true };
 }
 
-export function validateStudySession(
-  session: SessionRecord | null,
-  bookId: BookId,
-  bookWords: WordEntry[],
-): { valid: true } | { valid: false; reason: string } {
-  if (!session) return { valid: false, reason: '没有可恢复的学习会话' };
+/**
+ * 判断 session 是否已经完成了所有词
+ */
+export function isSessionComplete(session: SessionRecord): boolean {
+  const ids = session.phase === 'review' ? session.reviewWords : session.newWords;
+  if (!ids || ids.length === 0) return true;
+  return session.currentIndex >= ids.length;
+}
 
-  if (session.date !== getTodayString()) {
-    return { valid: false, reason: '学习会话已过期' };
-  }
-
-  if (session.bookId && session.bookId !== bookId) {
-    return { valid: false, reason: '学习会话不属于当前词库' };
-  }
-
-  if (!VALID_PHASES.has(session.phase)) {
-    return { valid: false, reason: '学习会话阶段已失效' };
-  }
-
-  if (session.phase === 'summary') return { valid: true };
-
-  const ids = getPhaseIds(session);
-  if (ids.length === 0) {
-    return { valid: false, reason: '学习会话没有可学习单词' };
-  }
-
-  if (session.currentIndex < 0 || session.currentIndex >= ids.length) {
-    return { valid: false, reason: '学习会话位置已失效' };
-  }
-
-  const wordIds = new Set(bookWords.map(word => word.id));
-  const missingId = ids.find(id => !wordIds.has(id));
-  if (missingId) {
-    return { valid: false, reason: `学习会话中的单词不存在：${missingId}` };
-  }
-
-  return { valid: true };
+/**
+ * 获取当前阶段需要学习的词 ID 列表
+ */
+export function getPhaseWordIds(session: SessionRecord): string[] {
+  if (session.phase === 'review') return session.reviewWords || [];
+  if (session.phase === 'round1') return session.newWords || [];
+  return [];
 }

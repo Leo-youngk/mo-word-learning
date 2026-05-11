@@ -1,7 +1,4 @@
-// ============================================================
-// CardDisplay — ROUND_1 首次相遇卡片
-// ============================================================
-
+import { primeSound, playMasteredSound, playFuzzySound } from '../lib/sound';
 import type { WordEntry } from '../types';
 import SpeakButton from './SpeakButton';
 
@@ -11,6 +8,12 @@ interface CardDisplayProps {
   onMastered: () => void;
   disabled?: boolean;
 }
+
+const soundPrimingProps = {
+  onPointerDown: primeSound,
+  onTouchStart: primeSound,
+  onMouseDown: primeSound,
+};
 
 export default function CardDisplay({
   entry,
@@ -31,10 +34,10 @@ export default function CardDisplay({
         )}
 
         <div className="card-display__translations">
-          {entry.translations.map((t, i) => (
-            <p key={i} className="card-display__trans">
-              <span className="card-display__type">{t.type}</span>
-              <span className="card-display__text">{t.text}</span>
+          {entry.translations.map((translation, index) => (
+            <p key={index} className="card-display__trans">
+              <span className="card-display__type">{translation.type}</span>
+              <span className="card-display__text">{translation.text}</span>
             </p>
           ))}
         </div>
@@ -43,21 +46,17 @@ export default function CardDisplay({
 
         {entry.example && (
           <div className="card-display__example">
-            <p className="card-display__example-en">
-              {entry.example.en}
-            </p>
-            <p className="card-display__example-zh">
-              {entry.example.zh}
-            </p>
+            <p className="card-display__example-en">{entry.example.en}</p>
+            <p className="card-display__example-zh">{entry.example.zh}</p>
           </div>
         )}
 
         {entry.phrases.length > 0 && (
           <div className="card-display__phrases">
-            {entry.phrases.map((p, i) => (
-              <p key={i} className="card-display__phrase">
-                <span className="card-display__phrase-en">{p.en}</span>
-                <span className="card-display__phrase-zh">{p.zh}</span>
+            {entry.phrases.map((phrase, index) => (
+              <p key={index} className="card-display__phrase">
+                <span className="card-display__phrase-en">{phrase.en}</span>
+                <span className="card-display__phrase-zh">{phrase.zh}</span>
               </p>
             ))}
           </div>
@@ -65,10 +64,20 @@ export default function CardDisplay({
       </div>
 
       <div className="card__actions card__actions--split">
-        <button className="btn btn--danger card__pill-btn" onClick={onFuzzy} disabled={disabled}>
+        <button
+          className="btn btn--danger card__pill-btn"
+          onClick={() => { playFuzzySound(); onFuzzy(); }}
+          disabled={disabled}
+          {...soundPrimingProps}
+        >
           模糊
         </button>
-        <button className="btn btn--success card__pill-btn card__pill-btn--primary" onClick={onMastered} disabled={disabled}>
+        <button
+          className="btn btn--success card__pill-btn card__pill-btn--primary"
+          onClick={() => { playMasteredSound(); onMastered(); }}
+          disabled={disabled}
+          {...soundPrimingProps}
+        >
           已掌握
         </button>
       </div>

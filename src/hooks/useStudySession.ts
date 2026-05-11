@@ -1,33 +1,24 @@
-// ============================================================
-// 学习状态机 Hook —「默」Mo
-// 只保留两条主流程：复习 fuzzy 词、新词手动标记为模糊/已掌握
-// ============================================================
-
 import { useState, useCallback, useEffect, useRef } from 'react';
-import type {
-  BookId,
-  WordEntry,
-  ProgressRecord,
-  SessionRecord,
-  StudyPhase,
-} from '../types';
-import * as db from '../lib/db';
-import {
-  getTodayString,
-  generateDailyQueue,
-  createFuzzyProgress,
-  createMasteredProgress,
-} from '../lib/scheduler';
-import { validateStudySession } from '../lib/session';
+import type { BookId, WordEntry, StudyPhase } from '../types';
+import { getTodayString, generateDailyQueue, createFuzzyProgress, createMasteredProgress } from '../lib/scheduler';
+import { playFuzzySound, playMasteredSound } from '../lib/sound';
+import { getWordUserStatus } from '../lib/wordStatus';
+import * as progressService from '../services/progressService';
+import * as sessionService from '../services/sessionService';
+import * as dailyActivityService from '../services/dailyActivityService';
+import * as settingsService from '../services/settingsService';
+import type { SessionData } from '../services/sessionService';
+
+type StudyStartupStatus = 'idle' | 'bootstrapping' | 'ready' | 'error';
 
 interface StudyState {
   ready: boolean;
+  startupStatus: StudyStartupStatus;
   advancing: boolean;
   phase: StudyPhase;
   currentIndex: number;
   totalInPhase: number;
   currentEntry: WordEntry | null;
-  currentProgress: ProgressRecord | null;
   newWordsCount: number;
   reviewWordsCount: number;
   processedNewWordsCount: number;
@@ -38,24 +29,56 @@ interface StudyActions {
   markFuzzy: () => Promise<void>;
   markMastered: () => Promise<void>;
   finishTodayEarly: () => Promise<void>;
+  saveAndExit: () => Promise<void>;
   restartSession: () => Promise<void>;
 }
 
-function getPhaseWordIds(session: SessionRecord): string[] {
-  if (session.phase === 'review') return session.reviewWords;
-  if (session.phase === 'round1') return session.newWords;
+function getPhaseWordIds(session: SessionData): string[] {
+  if (session.phase === 'review') return session.reviewWordIds;
+  if (session.phase === 'round1') return session.newWordIds;
   return [];
-}
-
-function getTotalInPhase(phase: StudyPhase, session: SessionRecord): number {
-  if (phase === 'review') return session.reviewWords.length;
-  if (phase === 'round1') return session.newWords.length;
-  return 0;
 }
 
 function findEntry(bookWords: WordEntry[], wordId?: string): WordEntry | null {
   if (!wordId) return null;
   return bookWords.find(w => w.id === wordId) || null;
+}
+
+function findNextValidWord(
+  ids: string[],
+  startIndex: number,
+  bookWords: WordEntry[],
+): { entry: WordEntry | null; index: number } {
+  if (ids.length === 0) return { entry: null, index: -1 };
+  for (let offset = 0; offset < ids.length; offset += 1) {
+    const idx = (startIndex + offset) % ids.length;
+    const entry = findEntry(bookWords, ids[idx]);
+    if (entry) return { entry, index: idx };
+  }
+  return { entry: null, index: -1 };
+}
+
+function createInitialState(): StudyState {
+  return {
+    ready: false,
+    startupStatus: 'idle',
+    advancing: false,
+    phase: 'review',
+    currentIndex: 0,
+    totalInPhase: 0,
+    currentEntry: null,
+    newWordsCount: 0,
+    reviewWordsCount: 0,
+    processedNewWordsCount: 0,
+    sessionError: '',
+  };
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return '今日学习初始化失败，请稍后重试。';
 }
 
 export function useStudySession(
@@ -65,84 +88,224 @@ export function useStudySession(
   dailyMinNewWords: number,
   enabled: boolean,
 ): { state: StudyState; actions: StudyActions } {
-  const [state, setState] = useState<StudyState>({
-    ready: false,
-    advancing: false,
-    phase: 'review',
-    currentIndex: 0,
-    totalInPhase: 0,
-    currentEntry: null,
-    currentProgress: null,
-    newWordsCount: 0,
-    reviewWordsCount: 0,
-    processedNewWordsCount: 0,
-    sessionError: '',
-  });
+  const [state, setState] = useState<StudyState>(createInitialState);
 
   const stateRef = useRef(state);
   const markingRef = useRef(false);
+  const sessionRef = useRef<SessionData | null>(null);
+  const syncQueueRef = useRef<Promise<void>>(Promise.resolve());
   stateRef.current = state;
 
   useEffect(() => {
     if (!enabled) {
-      setState(prev => ({ ...prev, ready: false }));
+      setState(prev => ({
+        ...prev,
+        ready: false,
+        startupStatus: 'idle',
+      }));
       return;
     }
 
     let cancelled = false;
+    setState(prev => ({
+      ...prev,
+      ready: false,
+      startupStatus: 'bootstrapping',
+      sessionError: '',
+    }));
 
     async function init() {
-      const today = getTodayString();
-      const saved = await db.getSession();
+      try {
+        const today = getTodayString();
+        const saved = await sessionService.getActiveSession(today);
 
-      if (saved && saved.date === today && (!saved.bookId || saved.bookId === bookId)) {
-        const validation = validateStudySession(saved, bookId, bookWords);
-        if (!validation.valid) {
-          await db.clearSession();
-          await startNewSession(cancelled);
+        if (saved && saved.status === 'active') {
+          sessionRef.current = saved;
+          await applySessionToUI(saved, cancelled);
           return;
         }
-        await restoreSession(saved, cancelled);
-        return;
-      }
 
-      if (saved && saved.date !== today) {
-        await db.clearSession();
+        await startNewSession(cancelled);
+      } catch (error) {
+        if (!cancelled) {
+          setState(prev => ({
+            ...prev,
+            ready: false,
+            startupStatus: 'error',
+            currentEntry: null,
+            totalInPhase: 0,
+            sessionError: getErrorMessage(error),
+          }));
+        }
       }
-
-      await startNewSession(cancelled);
     }
 
     init();
+    return () => { cancelled = true; };
+  }, [enabled, bookId, bookWords.length, currentWordIndex, dailyMinNewWords]);
 
-    return () => {
-      cancelled = true;
+  async function pruneMasteredWordsFromSession(session: SessionData): Promise<SessionData> {
+    const allProgress = await progressService.getAllProgress();
+    const globalProgressMap = progressService.buildGlobalProgressMap(allProgress);
+    const masteredGlobalKeys = new Set(
+      [...globalProgressMap.entries()]
+        .filter(([, progress]) => getWordUserStatus(progress) === 'mastered')
+        .map(([globalKey]) => globalKey),
+    );
+
+    if (masteredGlobalKeys.size === 0) {
+      return session;
+    }
+
+    const masteredWordIds = new Set(
+      bookWords
+        .filter(word => masteredGlobalKeys.has(progressService.getProgressGlobalKey(word)))
+        .map(word => word.id),
+    );
+
+    if (masteredWordIds.size === 0) {
+      return session;
+    }
+
+    const nextReviewWordIds = session.reviewWordIds.filter(wordId => !masteredWordIds.has(wordId));
+    const nextNewWordIds = session.newWordIds.filter(wordId => !masteredWordIds.has(wordId));
+
+    if (
+      nextReviewWordIds.length === session.reviewWordIds.length
+      && nextNewWordIds.length === session.newWordIds.length
+    ) {
+      return session;
+    }
+
+    const nextSession: SessionData = {
+      ...session,
+      reviewWordIds: nextReviewWordIds,
+      newWordIds: nextNewWordIds,
+      completedWordIds: session.completedWordIds.filter(wordId => !masteredWordIds.has(wordId)),
+      wordResults: Object.fromEntries(
+        Object.entries(session.wordResults).filter(([wordId]) => !masteredWordIds.has(wordId)),
+      ),
+      currentIndex: 0,
     };
-  }, [enabled, bookId, bookWords, currentWordIndex, dailyMinNewWords]);
 
-  async function setSessionState(session: SessionRecord, cancelled = false) {
+    const saved = await sessionService.saveSession(nextSession);
+    sessionRef.current = saved;
+    return saved;
+  }
+
+  async function applySessionToUI(session: SessionData, cancelled = false) {
     if (cancelled) return;
 
+    const sanitizedSession = await pruneMasteredWordsFromSession(session);
+    session = sanitizedSession;
+
+    if (session.phase === 'summary') {
+      setState({
+        ready: true,
+        startupStatus: 'ready',
+        advancing: false,
+        phase: 'summary',
+        currentIndex: 0,
+        totalInPhase: 0,
+        currentEntry: null,
+        newWordsCount: session.newWordIds.length,
+        reviewWordsCount: session.reviewWordIds.length,
+        processedNewWordsCount: session.completedWordIds.filter(id => session.newWordIds.includes(id)).length,
+        sessionError: '',
+      });
+      return;
+    }
+
     const ids = getPhaseWordIds(session);
-    const currentWordId = ids[session.currentIndex];
-    const currentEntry = findEntry(bookWords, currentWordId);
+    if (session.currentIndex >= ids.length) {
+      await advanceToNextPhase(session);
+      return;
+    }
+
+    const { entry, index: correctedIndex } = findNextValidWord(ids, session.currentIndex, bookWords);
+
+    if (correctedIndex >= 0 && correctedIndex !== session.currentIndex) {
+      session.currentIndex = correctedIndex;
+      await sessionService.saveSession(session);
+      sessionRef.current = session;
+    }
+
+    if (!entry) {
+      await finalizeDay(session);
+      setState({
+        ready: true,
+        startupStatus: 'ready',
+        advancing: false,
+        phase: 'summary',
+        currentIndex: 0,
+        totalInPhase: 0,
+        currentEntry: null,
+        newWordsCount: session.newWordIds.length,
+        reviewWordsCount: session.reviewWordIds.length,
+        processedNewWordsCount: session.completedWordIds.filter(id => session.newWordIds.includes(id)).length,
+        sessionError: '',
+      });
+      return;
+    }
+
     setState({
       ready: true,
+      startupStatus: 'ready',
       advancing: false,
       phase: session.phase,
       currentIndex: session.currentIndex,
-      totalInPhase: getTotalInPhase(session.phase, session),
-      currentEntry,
-      currentProgress: null,
-      newWordsCount: session.newWords.length,
-      reviewWordsCount: session.reviewWords.length,
-      processedNewWordsCount: session.processedNewWordIds?.length || 0,
+      totalInPhase: ids.length,
+      currentEntry: entry,
+      newWordsCount: session.newWordIds.length,
+      reviewWordsCount: session.reviewWordIds.length,
+      processedNewWordsCount: session.completedWordIds.filter(id => session.newWordIds.includes(id)).length,
       sessionError: '',
     });
   }
 
-  async function restoreSession(saved: SessionRecord, cancelled = false) {
-    await setSessionState(saved, cancelled);
+  async function advanceToNextPhase(session: SessionData) {
+    if (session.phase === 'review') {
+      if (session.newWordIds.length > 0) {
+        session.phase = 'round1';
+        session.currentIndex = 0;
+        const saved = await sessionService.saveSession(session);
+        sessionRef.current = saved;
+        await applySessionToUI(saved);
+      } else {
+        session.phase = 'summary';
+        session.currentIndex = 0;
+        const saved = await sessionService.saveSession(session);
+        sessionRef.current = saved;
+        await finalizeDay(session);
+        setState(prev => ({
+          ...prev,
+          ready: true,
+          startupStatus: 'ready',
+          phase: 'summary',
+          currentIndex: 0,
+          totalInPhase: 0,
+          currentEntry: null,
+        }));
+      }
+      return;
+    }
+
+    if (session.phase === 'round1') {
+      session.phase = 'summary';
+      session.currentIndex = 0;
+      const saved = await sessionService.saveSession(session);
+      sessionRef.current = saved;
+      await finalizeDay(session);
+      setState(prev => ({
+        ...prev,
+        ready: true,
+        startupStatus: 'ready',
+        phase: 'summary',
+        currentIndex: 0,
+        totalInPhase: 0,
+        currentEntry: null,
+      }));
+    }
   }
 
   async function startNewSession(cancelled = false) {
@@ -153,36 +316,35 @@ export function useStudySession(
         ? 'round1'
         : 'summary';
 
-    const session: SessionRecord = {
-      key: 'current',
+    const session: SessionData = {
       date: getTodayString(),
       bookId,
+      sessionType: 'daily',
+      batchIndex: 0,
+      status: 'active',
       phase,
       currentIndex: 0,
-      reviewWords: queue.reviewWords.map(p => p.wordId),
-      newWords: queue.newWords.map(w => w.id),
-      extraNewWords: [],
-      round2Results: {},
-      round4Results: {},
-      reviewResults: {},
+      reviewWordIds: queue.reviewWords.map(p => p.wordId),
+      newWordIds: queue.newWords.map(w => w.id),
+      completedWordIds: [],
+      wordResults: {},
       plannedNextWordIndex: queue.plannedNextWordIndex,
-      consumedNewWordIds: [],
-      processedNewWordIds: [],
     };
 
-    await db.saveSession(session);
+    const saved = await sessionService.saveSession(session);
+    sessionRef.current = saved;
 
     if (phase === 'summary') {
-      await finalizeDay(session);
+      await finalizeDay(saved);
       if (!cancelled) {
         setState({
           ready: true,
+          startupStatus: 'ready',
           advancing: false,
           phase: 'summary',
           currentIndex: 0,
           totalInPhase: 0,
           currentEntry: null,
-          currentProgress: null,
           newWordsCount: 0,
           reviewWordsCount: queue.reviewWords.length,
           processedNewWordsCount: 0,
@@ -192,260 +354,243 @@ export function useStudySession(
       return;
     }
 
-    await setSessionState(session, cancelled);
+    await applySessionToUI(saved, cancelled);
   }
 
-  async function advanceSession(session: SessionRecord) {
-    const nextIndex = session.currentIndex + 1;
+  function cloneSession(session: SessionData): SessionData {
+    return {
+      ...session,
+      reviewWordIds: [...session.reviewWordIds],
+      newWordIds: [...session.newWordIds],
+      completedWordIds: [...session.completedWordIds],
+      wordResults: { ...session.wordResults },
+    };
+  }
 
-    if (session.phase === 'review') {
-      if (nextIndex < session.reviewWords.length) {
-        session.currentIndex = nextIndex;
-        await db.saveSession(session);
-        await setSessionState(session);
-        return;
-      }
+  function getProcessedNewWordsCount(session: SessionData): number {
+    return session.completedWordIds.filter(id => session.newWordIds.includes(id)).length;
+  }
 
-      session.phase = session.newWords.length > 0 ? 'round1' : 'summary';
-      session.currentIndex = 0;
-      await db.saveSession(session);
+  function buildStateFromSession(session: SessionData): StudyState {
+    const processedNewWordsCount = getProcessedNewWordsCount(session);
 
-      if (session.phase === 'summary') {
-        await finalizeDay(session);
-        setState(prev => ({
-          ...prev,
-          phase: 'summary',
-          currentIndex: 0,
-          totalInPhase: 0,
-          currentEntry: null,
-          currentProgress: null,
-        }));
-        return;
-      }
-
-      await setSessionState(session);
-      return;
-    }
-
-    if (session.phase === 'round1') {
-      if (nextIndex < session.newWords.length) {
-        session.currentIndex = nextIndex;
-        await db.saveSession(session);
-        await setSessionState(session);
-        return;
-      }
-
-      session.phase = 'summary';
-      session.currentIndex = 0;
-      await db.saveSession(session);
-      await finalizeDay(session);
-      setState(prev => ({
-        ...prev,
+    if (session.phase === 'summary') {
+      return {
+        ready: true,
+        startupStatus: 'ready',
+        advancing: false,
         phase: 'summary',
         currentIndex: 0,
         totalInPhase: 0,
         currentEntry: null,
-        currentProgress: null,
-      }));
+        newWordsCount: session.newWordIds.length,
+        reviewWordsCount: session.reviewWordIds.length,
+        processedNewWordsCount,
+        sessionError: '',
+      };
     }
-  }
 
-  function getSessionViewState(session: SessionRecord): Pick<StudyState, 'phase' | 'currentIndex' | 'totalInPhase' | 'currentEntry' | 'currentProgress'> {
     const ids = getPhaseWordIds(session);
-    const currentWordId = ids[session.currentIndex];
-    const currentEntry = findEntry(bookWords, currentWordId);
+    const { entry, index } = findNextValidWord(ids, session.currentIndex, bookWords);
 
+    if (!entry) {
+      session.phase = 'summary';
+      session.currentIndex = 0;
+      return {
+        ready: true,
+        startupStatus: 'ready',
+        advancing: false,
+        phase: 'summary',
+        currentIndex: 0,
+        totalInPhase: 0,
+        currentEntry: null,
+        newWordsCount: session.newWordIds.length,
+        reviewWordsCount: session.reviewWordIds.length,
+        processedNewWordsCount,
+        sessionError: '',
+      };
+    }
+
+    session.currentIndex = index;
     return {
+      ready: true,
+      startupStatus: 'ready',
+      advancing: false,
       phase: session.phase,
       currentIndex: session.currentIndex,
-      totalInPhase: getTotalInPhase(session.phase, session),
-      currentEntry,
-      currentProgress: null,
+      totalInPhase: ids.length,
+      currentEntry: entry,
+      newWordsCount: session.newWordIds.length,
+      reviewWordsCount: session.reviewWordIds.length,
+      processedNewWordsCount,
+      sessionError: '',
     };
   }
 
-  function getAdvancedSession(session: SessionRecord): { nextSession: SessionRecord; finished: boolean } {
-    const nextIndex = session.currentIndex + 1;
-
-    if (session.phase === 'review') {
-      if (nextIndex < session.reviewWords.length) {
-        return {
-          nextSession: { ...session, currentIndex: nextIndex },
-          finished: false,
-        };
-      }
-
-      const nextPhase: StudyPhase = session.newWords.length > 0 ? 'round1' : 'summary';
-      return {
-        nextSession: { ...session, phase: nextPhase, currentIndex: 0 },
-        finished: nextPhase === 'summary',
-      };
-    }
-
-    if (session.phase === 'round1') {
-      if (nextIndex < session.newWords.length) {
-        return {
-          nextSession: { ...session, currentIndex: nextIndex },
-          finished: false,
-        };
-      }
-
-      return {
-        nextSession: { ...session, phase: 'summary', currentIndex: 0 },
-        finished: true,
-      };
-    }
-
-    return {
-      nextSession: session,
-      finished: true,
-    };
+  function enqueueSync(task: () => Promise<void>) {
+    syncQueueRef.current = syncQueueRef.current
+      .catch(() => undefined)
+      .then(task)
+      .catch(error => {
+        console.error('Failed to sync study progress:', error);
+        // TODO: push failed mutations into a retry queue instead of dropping them.
+      });
   }
 
   async function markCurrent(status: 'fuzzy' | 'mastered') {
-    const s = stateRef.current;
-    if (!s.ready || s.advancing || markingRef.current || !s.currentEntry) return;
+    const currentState = stateRef.current;
+    if (!currentState.ready || currentState.advancing || markingRef.current || !currentState.currentEntry) return;
     markingRef.current = true;
     setState(prev => ({ ...prev, advancing: true }));
 
     try {
-      const session = await db.getSession();
-      if (!session) return;
+      const session = sessionRef.current;
+      if (!session) {
+        console.error('Missing active session during markCurrent');
+        setState(prev => ({ ...prev, advancing: false, sessionError: '学习会话已失效，请重新开始今日学习。' }));
+        return;
+      }
+
+      const optimisticSession = cloneSession(session);
+      optimisticSession.phase = currentState.phase;
+      optimisticSession.currentIndex = currentState.currentIndex;
 
       const today = getTodayString();
-      const fromReview = s.phase === 'review';
-      const existing = fromReview ? await db.getProgress(s.currentEntry.id) : null;
-      const progress = status === 'fuzzy'
-        ? createFuzzyProgress(s.currentEntry, bookId, today, existing, fromReview)
-        : createMasteredProgress(s.currentEntry, bookId, today, existing, fromReview);
+      const fromReview = currentState.phase === 'review';
+      const ids = getPhaseWordIds(optimisticSession);
+      const nextIndex = optimisticSession.currentIndex + 1;
 
-      if (fromReview) {
-        session.reviewResults[s.currentEntry.id] = status === 'mastered';
+      if (nextIndex >= ids.length) {
+        if (optimisticSession.phase === 'review' && optimisticSession.newWordIds.length > 0) {
+          optimisticSession.phase = 'round1';
+          optimisticSession.currentIndex = 0;
+        } else {
+          optimisticSession.phase = 'summary';
+          optimisticSession.currentIndex = 0;
+        }
       } else {
-        session.processedNewWordIds = [
-          ...(session.processedNewWordIds || []),
-          s.currentEntry.id,
-        ];
-        session.consumedNewWordIds = [
-          ...(session.consumedNewWordIds || []),
-          s.currentEntry.id,
-        ];
+        optimisticSession.currentIndex = nextIndex;
       }
 
-      const { nextSession, finished } = getAdvancedSession(session);
-      const nextProcessedCount = nextSession.processedNewWordIds?.length || 0;
+      optimisticSession.completedWordIds = [...optimisticSession.completedWordIds, currentState.currentEntry.id];
+      optimisticSession.wordResults[currentState.currentEntry.id] = status;
 
-      setState(prev => ({
-        ...prev,
-        advancing: true,
-        processedNewWordsCount: nextProcessedCount,
-        ...(finished
-          ? {
-              phase: 'summary' as StudyPhase,
-              currentIndex: 0,
-              totalInPhase: 0,
-              currentEntry: null,
-              currentProgress: null,
-            }
-          : getSessionViewState(nextSession)),
-      }));
-
-      await db.saveProgress(progress);
-      void db.enqueueSync('progress', progress.wordId, progress);
-
-      if (finished) {
-        await db.saveSession(nextSession);
-        await finalizeDay(nextSession);
+      const nextState = buildStateFromSession(optimisticSession);
+      sessionRef.current = optimisticSession;
+      setState(nextState);
+      if (status === 'mastered') {
+        playMasteredSound();
       } else {
-        await db.saveSession(nextSession);
+        playFuzzySound();
       }
+      markingRef.current = false;
+
+      const sessionSnapshot = cloneSession(optimisticSession);
+      const currentEntry = currentState.currentEntry;
+      enqueueSync(async () => {
+        const existing = fromReview ? await progressService.getProgress(currentEntry.id) : null;
+        const progress = status === 'fuzzy'
+          ? createFuzzyProgress(currentEntry, bookId, today, existing, fromReview)
+          : createMasteredProgress(currentEntry, bookId, today, existing, fromReview);
+
+        await progressService.saveProgress(progress);
+        await sessionService.saveSession(sessionSnapshot);
+        await dailyActivityService.incrementDailyCounts(today, bookId, !fromReview);
+
+        if (sessionSnapshot.phase === 'summary') {
+          await finalizeDay(sessionSnapshot);
+        }
+      });
     } catch (error) {
       console.error('Failed to mark current word:', error);
-      setState(prev => ({
-        ...prev,
-        sessionError: '保存学习进度失败，请重试',
-      }));
+      setState(prev => ({ ...prev, sessionError: '保存学习进度失败，请重试' }));
     } finally {
       markingRef.current = false;
-      setState(prev => ({ ...prev, advancing: false }));
     }
   }
 
-  async function finalizeDay(session: SessionRecord) {
+  async function finalizeDay(session: SessionData) {
     const today = getTodayString();
-    const processedNewCount = session.processedNewWordIds?.length || 0;
+    const newCount = session.completedWordIds.filter(id => session.newWordIds.includes(id)).length;
+    const reviewCount = session.completedWordIds.filter(id => session.reviewWordIds.includes(id)).length;
+    const existingActivity = await dailyActivityService.getDailyActivity(today);
 
-    const dailyLog = await db.getDailyLog(today);
-    const newLog = {
+    await dailyActivityService.upsertDailyActivity({
       date: today,
-      newWordsCount: processedNewCount,
-      reviewWordsCount: session.reviewWords.length,
-      currentBookId: bookId,
-    };
-    await db.saveDailyLog(dailyLog ? { ...dailyLog, ...newLog } : newLog);
-    void db.enqueueSync('dailyLog', today, newLog);
+      bookId: session.bookId,
+      newWordsCount: Math.max(existingActivity?.newWordsCount ?? 0, newCount),
+      reviewWordsCount: Math.max(existingActivity?.reviewWordsCount ?? 0, reviewCount),
+      totalWordsStudied: Math.max(existingActivity?.totalWordsStudied ?? 0, session.completedWordIds.length),
+    });
 
-    const settings = await db.getSettings();
-    if (settings) {
-      const yesterdayStr = addOneDay(today, -1);
-      const isConsecutive = settings.lastStudyDate === yesterdayStr;
-      const studiedTodayBefore = settings.lastStudyDate === today;
-      const newStreak = studiedTodayBefore
-        ? settings.streakCount
-        : isConsecutive
-          ? settings.streakCount + 1
-          : 1;
+    const settings = await settingsService.getSettings();
+    const yesterdayStr = addOneDay(today, -1);
+    const isConsecutive = settings.lastStudyDate === yesterdayStr;
+    const studiedTodayBefore = settings.lastStudyDate === today;
+    const newStreak = studiedTodayBefore
+      ? settings.streakCount
+      : isConsecutive
+        ? settings.streakCount + 1
+        : 1;
 
-      const updatedSettings = {
-        ...settings,
-        lastStudyDate: today,
-        streakCount: newStreak,
-        currentWordIndexByBook: {
-          ...settings.currentWordIndexByBook,
-          [bookId]: session.plannedNextWordIndex,
-        },
-      };
-      await db.saveSettings(updatedSettings);
-      void db.enqueueSync('settings', 'settings', updatedSettings);
-    }
+    await settingsService.updateSettingsPartial({
+      lastStudyDate: today,
+      streakCount: newStreak,
+      currentWordIndexByBook: {
+        ...settings.currentWordIndexByBook,
+        [bookId]: session.plannedNextWordIndex,
+      },
+    });
 
-    await db.clearSession();
+    await sessionService.completeSession(session.id!);
   }
 
   const finishTodayEarly = useCallback(async () => {
-    const session = await db.getSession();
+    const session = sessionRef.current;
     if (!session) return;
     await finalizeDay(session);
   }, [bookId]);
 
+  const saveAndExit = useCallback(async () => {
+    const session = sessionRef.current;
+    if (!session) return;
+    await sessionService.saveSession(cloneSession(session));
+  }, []);
+
   const restartSession = useCallback(async () => {
-    await db.clearSession();
-    markingRef.current = false;
-    setState(prev => ({
-      ...prev,
-      ready: false,
-      advancing: false,
-      sessionError: '',
-    }));
-    await startNewSession(false);
-  }, [bookId, bookWords, currentWordIndex, dailyMinNewWords]);
+    try {
+      const session = sessionRef.current;
+      if (session?.id) {
+        await sessionService.completeSession(session.id);
+      }
+      markingRef.current = false;
+      sessionRef.current = null;
+      setState(prev => ({
+        ...prev,
+        ready: false,
+        startupStatus: 'bootstrapping',
+        advancing: false,
+        sessionError: '',
+      }));
+      await startNewSession(false);
+    } catch (error) {
+      setState(prev => ({
+        ...prev,
+        ready: false,
+        startupStatus: 'error',
+        currentEntry: null,
+        totalInPhase: 0,
+        sessionError: getErrorMessage(error),
+      }));
+    }
+  }, [bookId, bookWords.length, currentWordIndex, dailyMinNewWords]);
 
-  const markFuzzy = useCallback(async () => {
-    await markCurrent('fuzzy');
-  }, [bookId]);
-
-  const markMastered = useCallback(async () => {
-    await markCurrent('mastered');
-  }, [bookId]);
+  const markFuzzy = useCallback(async () => { await markCurrent('fuzzy'); }, [markCurrent]);
+  const markMastered = useCallback(async () => { await markCurrent('mastered'); }, [markCurrent]);
 
   return {
     state,
-    actions: {
-      markFuzzy,
-      markMastered,
-      finishTodayEarly,
-      restartSession,
-    },
+    actions: { markFuzzy, markMastered, finishTodayEarly, saveAndExit, restartSession },
   };
 }
 

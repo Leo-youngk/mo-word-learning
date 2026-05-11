@@ -2,6 +2,7 @@ node_modules
 dist
 .env
 .env.local
+.env.vercel.production
 vercel配置.txt
 .DS_Store
 temp_vocab
@@ -13,5 +14,13 @@ vocab.zip
 output
 .qwen
 .vscode
-
 .vercel
+docs/
+momo_final_plan_markdowns/
+api/__tests__/
+api/_lib/
+src/components/__tests__/
+src/hooks/__tests__/
+src/lib/__tests__/
+src/test/
+supabase/

@@ -1,13 +1,19 @@
 import { useState } from 'react';
-import type { WordEntry, ProgressRecord } from '../types';
+import { primeSound, playMasteredSound, playFuzzySound } from '../lib/sound';
+import type { WordEntry } from '../types';
 import SpeakButton from './SpeakButton';
 
 interface ReviewCardProps {
   entry: WordEntry;
-  progress: ProgressRecord;
   onResult: (correct: boolean) => void;
   disabled?: boolean;
 }
+
+const soundPrimingProps = {
+  onPointerDown: primeSound,
+  onTouchStart: primeSound,
+  onMouseDown: primeSound,
+};
 
 export default function ReviewCard({ entry, onResult, disabled = false }: ReviewCardProps) {
   const [revealed, setRevealed] = useState(false);
@@ -42,17 +48,25 @@ export default function ReviewCard({ entry, onResult, disabled = false }: Review
         <p className="card-review__translation">{translation}</p>
 
         {entry.example && (
-          <p className="card-review__sentence-full">
-            {entry.example.en}
-          </p>
+          <p className="card-review__sentence-full">{entry.example.en}</p>
         )}
       </div>
 
       <div className="card__actions card__actions--split">
-        <button className="btn btn--danger card__pill-btn" onClick={() => onResult(false)} disabled={disabled}>
+        <button
+          className="btn btn--danger card__pill-btn"
+          onClick={() => { playFuzzySound(); onResult(false); }}
+          disabled={disabled}
+          {...soundPrimingProps}
+        >
           仍然模糊
         </button>
-        <button className="btn btn--success card__pill-btn card__pill-btn--primary" onClick={() => onResult(true)} disabled={disabled}>
+        <button
+          className="btn btn--success card__pill-btn card__pill-btn--primary"
+          onClick={() => { playMasteredSound(); onResult(true); }}
+          disabled={disabled}
+          {...soundPrimingProps}
+        >
           已掌握
         </button>
       </div>

@@ -1,25 +1,10 @@
 const SOUND_ENABLED_STORAGE_KEY = 'mo:sound-enabled';
-const DEFAULT_VOLUME = 0.24;
-const RAMP_IN_SECONDS = 0.008;
-const RAMP_OUT_PADDING_SECONDS = 0.02;
+const SAMPLE_RATE = 22050;
 
 let soundEnabled = true;
-let audioContext: AudioContext | null = null;
-let audioUnlocked = false;
-
-type ToneSpec = {
-  frequency: number;
-  durationMs: number;
-  volume?: number;
-  delayMs?: number;
-  type?: OscillatorType;
-};
-
-function canUseAudio() {
-  return typeof window !== 'undefined'
-    && (typeof window.AudioContext !== 'undefined'
-      || typeof (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext !== 'undefined');
-}
+let masteredAudio: HTMLAudioElement | null = null;
+let fuzzyAudio: HTMLAudioElement | null = null;
+let soundsReady = false;
 
 function readStoredSoundEnabled() {
   if (typeof window === 'undefined') return true;
@@ -28,114 +13,116 @@ function readStoredSoundEnabled() {
   return stored === 'true';
 }
 
-function createAudioContext() {
-  const AudioContextCtor = window.AudioContext
-    || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-
-  if (!AudioContextCtor) return null;
-
-  try {
-    return new AudioContextCtor();
-  } catch {
-    return null;
+function writeStr(view: DataView, offset: number, str: string) {
+  for (let i = 0; i < str.length; i++) {
+    view.setUint8(offset + i, str.charCodeAt(i));
   }
 }
 
-function getAudioContext() {
-  if (!canUseAudio()) return null;
-  if (audioContext && audioContext.state !== 'closed') {
-    return audioContext;
-  }
+function generateWavBlob(
+  tones: { freq: number; durationMs: number; delayMs?: number; volume: number }[],
+): Blob {
+  const totalDurationMs = tones.reduce((max, t) => Math.max(max, (t.delayMs ?? 0) + t.durationMs), 0);
+  const totalSamples = Math.ceil((SAMPLE_RATE * totalDurationMs) / 1000);
+  const bufferSize = 44 + totalSamples * 2;
+  const buffer = new ArrayBuffer(bufferSize);
+  const view = new DataView(buffer);
 
-  audioContext = createAudioContext();
-  return audioContext;
-}
+  writeStr(view, 0, 'RIFF');
+  view.setUint32(4, 36 + totalSamples * 2, true);
+  writeStr(view, 8, 'WAVE');
+  writeStr(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, SAMPLE_RATE, true);
+  view.setUint32(28, SAMPLE_RATE * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(view, 36, 'data');
+  view.setUint32(40, totalSamples * 2, true);
 
-function warmUpAudioContext(ctx: AudioContext) {
-  if (audioUnlocked) return;
+  for (let i = 0; i < totalSamples; i++) {
+    const t = i / SAMPLE_RATE;
+    let sample = 0;
 
-  try {
-    const oscillator = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const startAt = ctx.currentTime;
-    const endAt = startAt + 0.01;
+    for (const tone of tones) {
+      const toneStart = (tone.delayMs ?? 0) / 1000;
+      const toneEnd = toneStart + tone.durationMs / 1000;
+      if (t < toneStart || t >= toneEnd) continue;
 
-    gain.gain.setValueAtTime(0.00001, startAt);
-    oscillator.frequency.setValueAtTime(440, startAt);
-    oscillator.connect(gain);
-    gain.connect(ctx.destination);
-    oscillator.start(startAt);
-    oscillator.stop(endAt);
-    audioUnlocked = true;
-  } catch {
-  }
-}
-
-function tryResumeSync(ctx: AudioContext): boolean {
-  if (ctx.state === 'running') {
-    warmUpAudioContext(ctx);
-    return true;
-  }
-
-  try {
-    const result = ctx.resume();
-    if (result && typeof result.then === 'function') {
-      result.then(() => {
-        warmUpAudioContext(ctx);
-      }).catch(() => {});
+      const localT = t - toneStart;
+      const progress = localT / (tone.durationMs / 1000);
+      const envelope = Math.exp(-progress * 5) * (1 - Math.pow(progress, 3));
+      sample += Math.sin(2 * Math.PI * tone.freq * localT) * tone.volume * envelope;
     }
-  } catch {
+
+    const clamped = Math.max(-1, Math.min(1, sample));
+    view.setInt16(44 + i * 2, clamped * 32767, true);
   }
 
-  return (ctx as any).state === 'running';
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+function ensureSounds() {
+  if (soundsReady) return;
+
+  try {
+    const masteredBlob = generateWavBlob([
+      { freq: 523, durationMs: 90, volume: 0.5 },
+      { freq: 659, durationMs: 90, delayMs: 70, volume: 0.55 },
+      { freq: 784, durationMs: 160, delayMs: 140, volume: 0.45 },
+    ]);
+    masteredAudio = new Audio(URL.createObjectURL(masteredBlob));
+
+    const fuzzyBlob = generateWavBlob([
+      { freq: 392, durationMs: 120, volume: 0.4 },
+      { freq: 330, durationMs: 160, delayMs: 70, volume: 0.35 },
+    ]);
+    fuzzyAudio = new Audio(URL.createObjectURL(fuzzyBlob));
+
+    soundsReady = true;
+  } catch {
+  }
 }
 
 export function primeSound() {
-  const ctx = getAudioContext();
-  if (!ctx) return;
-  tryResumeSync(ctx);
+  ensureSounds();
+  if (masteredAudio) {
+    masteredAudio.load();
+  }
+  if (fuzzyAudio) {
+    fuzzyAudio.load();
+  }
 }
 
-function scheduleTone(ctx: AudioContext, tone: ToneSpec) {
-  const oscillator = ctx.createOscillator();
-  const gain = ctx.createGain();
-  const startAt = ctx.currentTime + ((tone.delayMs ?? 0) / 1000);
-  const endAt = startAt + (tone.durationMs / 1000);
-  const volume = Math.min(tone.volume ?? DEFAULT_VOLUME, 0.35);
-
-  oscillator.type = tone.type ?? 'triangle';
-  oscillator.frequency.setValueAtTime(tone.frequency, startAt);
-
-  gain.gain.setValueAtTime(0.0001, startAt);
-  gain.gain.exponentialRampToValueAtTime(volume, startAt + RAMP_IN_SECONDS);
-  gain.gain.exponentialRampToValueAtTime(0.0001, endAt);
-
-  oscillator.connect(gain);
-  gain.connect(ctx.destination);
-  oscillator.start(startAt);
-  oscillator.stop(endAt + RAMP_OUT_PADDING_SECONDS);
-}
-
-function playToneSequenceSync(tones: ToneSpec[]) {
+export function playMasteredSound() {
   if (!soundEnabled) return;
+  ensureSounds();
+  if (!masteredAudio) return;
 
   try {
-    const ctx = getAudioContext();
-    if (!ctx) return;
-
-    tryResumeSync(ctx);
-
-    if (ctx.state === 'suspended') {
-      void ctx.resume().then(() => {
-        for (const tone of tones) {
-          scheduleTone(ctx, tone);
-        }
-      }).catch(() => {});
-      return;
+    const audio = masteredAudio;
+    audio.currentTime = 0;
+    const p = audio.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => {});
     }
+  } catch {
+  }
+}
 
-    for (const tone of tones) {
-      scheduleTone(ctx, tone);
+export function playFuzzySound() {
+  if (!soundEnabled) return;
+  ensureSounds();
+  if (!fuzzyAudio) return;
+
+  try {
+    const audio = fuzzyAudio;
+    audio.currentTime = 0;
+    const p = audio.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => {});
     }
   } catch {
   }
@@ -154,21 +141,6 @@ export function setSoundEnabled(enabled: boolean) {
 
 export function initSoundPreferences() {
   soundEnabled = readStoredSoundEnabled();
-}
-
-export function playMasteredSound() {
-  playToneSequenceSync([
-    { frequency: 523, durationMs: 80, volume: 0.28, type: 'sine' },
-    { frequency: 659, durationMs: 80, volume: 0.30, delayMs: 60, type: 'sine' },
-    { frequency: 784, durationMs: 140, volume: 0.22, delayMs: 120, type: 'sine' },
-  ]);
-}
-
-export function playFuzzySound() {
-  playToneSequenceSync([
-    { frequency: 392, durationMs: 100, volume: 0.22, type: 'sine' },
-    { frequency: 330, durationMs: 150, volume: 0.18, delayMs: 60, type: 'sine' },
-  ]);
 }
 
 initSoundPreferences();

@@ -4,7 +4,7 @@ import * as settingsService from '../services/settingsService';
 import type { AppSettings } from '../services/settingsService';
 import { BOOK_IDS, BOOK_LABELS } from '../lib/books';
 import { signOut } from '../lib/auth';
-import { setSoundEnabled } from '../lib/sound';
+import { setSoundEnabled, getSoundPacks, getCurrentSoundPack, setSoundPack, playMasteredSound, type SoundPackName } from '../lib/sound';
 
 interface SettingsProps {
   onBack: () => void;
@@ -24,8 +24,11 @@ const THEME_OPTIONS: { id: ThemeMode; label: string }[] = [
   { id: 'night', label: '夜间' },
 ];
 
+const SOUND_PACK_OPTIONS = getSoundPacks();
+
 export default function Settings({ onBack, onBookChange, onSettingsChange }: SettingsProps) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [soundPack, setSoundPackState] = useState<SoundPackName>(getCurrentSoundPack());
 
   useEffect(() => {
     settingsService.getSettings().then(s => {
@@ -131,6 +134,27 @@ export default function Settings({ onBack, onBookChange, onSettingsChange }: Set
             <span className="settings__toggle-label">学习音效</span>
           </label>
           <p className="settings__sync-desc">点击“已掌握”或“模糊”时播放轻量提示音</p>
+
+          {settings.soundEnabled && (
+            <div className="settings__sound-packs" style={{ marginTop: '16px' }}>
+              <p className="settings__sync-desc" style={{ marginBottom: '8px' }}>音效风格</p>
+              <div className="settings__theme-row">
+                {SOUND_PACK_OPTIONS.map(opt => (
+                  <button
+                    key={opt.id}
+                    className={`settings__theme-btn ${soundPack === opt.id ? 'settings__theme-btn--active' : ''}`}
+                    onClick={() => {
+                      setSoundPack(opt.id);
+                      setSoundPackState(opt.id);
+                      playMasteredSound();
+                    }}
+                  >
+                    <span>{opt.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="settings__section">

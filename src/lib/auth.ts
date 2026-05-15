@@ -56,6 +56,14 @@ export async function signOut(): Promise<void> {
   emit(null);
 }
 
+export async function resetPassword(email: string): Promise<{ ok: boolean; message: string }> {
+  const data = await backendPost<{ ok: boolean; message: string }>('/api/auth', {
+    action: 'resetPassword',
+    email,
+  });
+  return data;
+}
+
 export async function restoreSession(): Promise<User | null> {
   const data = await backendRequest<{ user: User | null }>('/api/auth');
   currentUser = data.user ?? null;

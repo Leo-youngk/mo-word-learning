@@ -3,7 +3,7 @@ import type { BookId } from './types';
 import { useWordbook } from './hooks/useWordbook';
 import { useStudySession } from './hooks/useStudySession';
 import { getTodayString, generateDailyQueue } from './lib/scheduler';
-import { restoreSession, onAuthStateChange, autoAuth, type User } from './lib/auth';
+import { restoreSession, onAuthStateChange, autoAuth, resetPassword, type User } from './lib/auth';
 import { setSoundEnabled } from './lib/sound';
 import * as progressService from './services/progressService';
 import * as settingsService from './services/settingsService';
@@ -52,6 +52,8 @@ export default function App() {
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState('');
+  const [authView, setAuthView] = useState<'login' | 'forgot'>('login');
+  const [resetMessage, setResetMessage] = useState('');
   const [studyLaunchError, setStudyLaunchError] = useState('');
 
   const bookId = settings?.currentBookId ?? DEFAULT_BOOK_ID;
@@ -233,6 +235,21 @@ export default function App() {
     }
   }, [authEmail, authPassword]);
 
+  const handleResetPassword = useCallback(async () => {
+    setAuthError('');
+    setResetMessage('');
+    if (!authEmail) {
+      setAuthError('请输入邮箱地址');
+      return;
+    }
+    try {
+      const result = await resetPassword(authEmail);
+      setResetMessage(result.message);
+    } catch (error) {
+      setAuthError(getErrorMessage(error));
+    }
+  }, [authEmail]);
+
   const handleStart = useCallback(async (targetBookId: BookId) => {
     setStudyLaunchError('');
     setHasSession(false);
@@ -341,6 +358,36 @@ export default function App() {
   }
 
   if (view === 'auth') {
+    if (authView === 'forgot') {
+      return (
+        <div className="app">
+          <div className="auth-screen">
+            <div className="auth-screen__logo">默</div>
+            <h2 className="auth-screen__title">重置密码</h2>
+            {authError && <p className="auth-screen__error">{authError}</p>}
+            {resetMessage && <p className="auth-screen__success">{resetMessage}</p>}
+            <input
+              className="auth-screen__input"
+              type="email"
+              placeholder="邮箱"
+              value={authEmail}
+              onChange={e => setAuthEmail(e.target.value)}
+            />
+            <button className="home__primary-btn" onClick={handleResetPassword} style={{ width: '100%', marginTop: '12px' }}>
+              发送重置邮件
+            </button>
+            <button
+              className="btn btn--secondary"
+              onClick={() => { setAuthView('login'); setAuthError(''); setResetMessage(''); }}
+              style={{ width: '100%', marginTop: '8px' }}
+            >
+              返回登录
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="app">
         <div className="auth-screen">
@@ -368,6 +415,13 @@ export default function App() {
           <p className="settings__sync-desc" style={{ marginTop: '12px', textAlign: 'center' }}>
             首次使用自动注册，已有账号直接登录
           </p>
+          <button
+            className="btn btn--text"
+            onClick={() => { setAuthView('forgot'); setAuthError(''); setResetMessage(''); }}
+            style={{ width: '100%', marginTop: '8px', color: 'var(--c-text-tertiary)' }}
+          >
+            忘记密码？
+          </button>
         </div>
       </div>
     );

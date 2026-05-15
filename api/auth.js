@@ -103,6 +103,21 @@ export default async function handler(req, res) {
       return;
     }
 
+    if (action === 'resetPassword') {
+      const { error } = await supabase.auth.admin.generateLink({
+        type: 'recovery',
+        email,
+        options: {
+          redirectTo: `${req.headers.origin || 'https://mo-word-learning.vercel.app'}/auth/callback`,
+        },
+      });
+
+      if (error) throw error;
+
+      send(res, 200, { ok: true, message: '重置邮件已发送，请查收邮箱' });
+      return;
+    }
+
     send(res, 400, { error: 'Unsupported auth action' });
   } catch (error) {
     sendError(res, error);

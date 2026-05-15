@@ -39,6 +39,17 @@ export async function signUp(email: string, password: string): Promise<User> {
   return data.user;
 }
 
+export async function autoAuth(email: string, password: string): Promise<User> {
+  const data = await backendPost<{ user: User }>('/api/auth', {
+    action: 'auto',
+    email,
+    password,
+  });
+  currentUser = data.user;
+  emit(currentUser);
+  return data.user;
+}
+
 export async function signOut(): Promise<void> {
   await backendPost<{ ok: boolean }>('/api/auth', { action: 'logout' });
   currentUser = null;

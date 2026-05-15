@@ -3,7 +3,7 @@ import type { BookId } from './types';
 import { useWordbook } from './hooks/useWordbook';
 import { useStudySession } from './hooks/useStudySession';
 import { getTodayString, generateDailyQueue } from './lib/scheduler';
-import { restoreSession, onAuthStateChange, signIn, signUp, type User } from './lib/auth';
+import { restoreSession, onAuthStateChange, autoAuth, type User } from './lib/auth';
 import { setSoundEnabled } from './lib/sound';
 import * as progressService from './services/progressService';
 import * as settingsService from './services/settingsService';
@@ -52,7 +52,6 @@ export default function App() {
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState('');
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [studyLaunchError, setStudyLaunchError] = useState('');
 
   const bookId = settings?.currentBookId ?? DEFAULT_BOOK_ID;
@@ -228,15 +227,11 @@ export default function App() {
   const handleAuth = useCallback(async () => {
     setAuthError('');
     try {
-      if (authMode === 'login') {
-        await signIn(authEmail, authPassword);
-      } else {
-        await signUp(authEmail, authPassword);
-      }
+      await autoAuth(authEmail, authPassword);
     } catch (error) {
       setAuthError(getErrorMessage(error));
     }
-  }, [authEmail, authPassword, authMode]);
+  }, [authEmail, authPassword]);
 
   const handleStart = useCallback(async (targetBookId: BookId) => {
     setStudyLaunchError('');
@@ -350,7 +345,7 @@ export default function App() {
       <div className="app">
         <div className="auth-screen">
           <div className="auth-screen__logo">默</div>
-          <h2 className="auth-screen__title">{authMode === 'login' ? '登录' : '注册'}</h2>
+          <h2 className="auth-screen__title">登录</h2>
           {authError && <p className="auth-screen__error">{authError}</p>}
           <input
             className="auth-screen__input"
@@ -368,15 +363,11 @@ export default function App() {
             onKeyDown={e => e.key === 'Enter' && handleAuth()}
           />
           <button className="home__primary-btn" onClick={handleAuth} style={{ width: '100%', marginTop: '12px' }}>
-            {authMode === 'login' ? '登录' : '注册'}
+            登录 / 注册
           </button>
-          <button
-            className="btn btn--secondary"
-            onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
-            style={{ width: '100%', marginTop: '8px' }}
-          >
-            {authMode === 'login' ? '没有账号？注册' : '已有账号？登录'}
-          </button>
+          <p className="settings__sync-desc" style={{ marginTop: '12px', textAlign: 'center' }}>
+            首次使用自动注册，已有账号直接登录
+          </p>
         </div>
       </div>
     );

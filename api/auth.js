@@ -64,6 +64,39 @@ export default async function handler(req, res) {
       return;
     }
 
+    if (action === 'auto') {
+      const loginResult = await supabase.auth.signInWithPassword({ email, password });
+
+      if (loginResult.data.user) {
+        setSessionCookie(res, req, loginResult.data.user);
+        send(res, 200, {
+          user: {
+            id: loginResult.data.user.id,
+            email: loginResult.data.user.email ?? null,
+          },
+        });
+        return;
+      }
+
+      const { data, error } = await supabase.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+      });
+
+      if (error) throw error;
+      if (!data.user) throw new Error('注册失败');
+
+      setSessionCookie(res, req, data.user);
+      send(res, 200, {
+        user: {
+          id: data.user.id,
+          email: data.user.email ?? null,
+        },
+      });
+      return;
+    }
+
     if (action === 'logout') {
       clearSessionCookie(res, req);
       send(res, 200, { ok: true });
